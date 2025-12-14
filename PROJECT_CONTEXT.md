@@ -428,8 +428,170 @@ CREATE TABLE documents (
 );
 ```
 
-10. Open Questions / TODO
+10. Core Principles
 
+**EDITORIAL NEUTRALITY**: This tool does nothing other than report details and aggregate information. It will NEVER be used to sway opinion. The platform presents facts, documents, and schedules—not endorsements, recommendations, or political positions. AI summaries must be factual and neutral.
+
+11. Project Vision: The Community Forum
+
+Civic Commons is not just a government meeting tracker—it's meant to be **the community forum**. Everything that makes Twinsburg a community belongs here:
+- Government: City Council, School Board, Parks
+- Civic: Library, Historical Society
+- Community: Churches, Scouts, Youth Sports
+- Business: Chamber, Local Businesses
+- Regional: Metroparks, County resources
+
+Members can submit new sites to monitor; administrators review and add sources.
+
+12. Feature Roadmap
+
+### v1 — Foundation (MVP)
+Core infrastructure and basic functionality.
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| Scraper Infrastructure | Worker service with driver pattern | Planned |
+| MCP Server | LLM-accessible API | Planned |
+| Public Web App | Calendar, search, basic browsing | Planned |
+| Admin Dashboard | Health monitoring, manual triggers | Planned |
+| Document Search | Full-text search with original + summary links | Planned |
+| Source Health Tracking | Last success/failure, staleness indicators | Planned |
+| Basic SEO | SSR, metadata, clean URLs | Planned |
+
+### v1.1 — User Engagement
+Features that bring users back.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **User Signup** | Optional registration for personalization. Site accessible without login. | High |
+| **Email Newsletters** | Daily, weekly, monthly digest options | High |
+| **Labels/Tags** | Events and topics tagged with categories, owner/decision-maker clear | High |
+| **Calendar Export** | iCal/ICS feeds for Google Calendar, Apple Calendar | High |
+| **Keyword Alerts** | Email/notification when specific terms appear | Medium |
+| **Deadline View** | "What's due soon?" — Last day to vote, submit applications, etc. | Medium |
+
+### v1.2 — Community Features
+Interaction and engagement.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Community Comments** | Residents can comment on topics/events | High |
+| **Error Flagging** | Users can flag incorrect AI summaries | High |
+| **"Dig Deeper" Feature** | Explore historical context on topics | Medium |
+| **User Stories** | Residents can "tell their story" — community-voted context | Medium |
+| **Timeline View** | Visual timeline of an issue across meetings | Medium |
+| **Vote Tracking** | Who voted what and when on specific issues | Medium |
+
+### v1.3 — Accessibility & Inclusion
+Reaching everyone in the community.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Accessibility (WCAG AA)** | Full compliance, screen readers, contrast, font sizes | Critical |
+| **Senior Newsletter** | Larger print, emailed to distribution lists for printing/sharing | High |
+| **Onboarding Flow** | "New to Twinsburg" vs "I know the basics" paths | Medium |
+| **Print-Friendly Views** | Optimized for paper distribution | Medium |
+
+### v1.4 — Civic Engagement
+Deeper civic participation.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Election/Vote Tracker** | What's on the next ballot? What are the issues? | High |
+| **Public Records Integration** | How to tie into records requests | Medium |
+| **Meeting Reminders** | "City Council meets tomorrow" notifications | Medium |
+
+### v2.0 — Community Spotlight & Business
+Expanding beyond government.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Local Business Spotlight** | Periodic callouts to small businesses | Medium |
+| **Chamber Integration** | Events, business news | Medium |
+| **Community Source Submissions** | Members suggest new sources to monitor | Medium |
+| **Church/Scout/Youth Events** | Broader community calendar | Medium |
+
+### Future — Federation
+| Feature | Description |
+|---------|-------------|
+| **Multi-City Deployment** | Regional queries across city boundaries |
+| **Federated MCP Network** | Cities expose APIs to each other |
+
+13. Technical Requirements (Non-Functional)
+
+### Accessibility
+- **WCAG AA Compliance** — Required for public web app
+- Large text mode / high contrast mode
+- Screen reader compatible
+- Keyboard navigation
+
+### Operations
+- **Centralized Logging** — Structured logs, searchable, retained
+- **Health Status Dashboard** — Real-time status of all services and sources
+- **Comprehensive Documentation** — Ground-up docs for deployment, maintenance, contribution
+- **.env.example** — All required secrets documented with example values
+
+### Data Sync
+- **Change Detection** — How to detect when source events are modified
+- **Sync Strategy** — Full refresh vs. incremental updates
+- **Conflict Resolution** — What happens when local data differs from source
+
+14. Environment Configuration
+
+Required secrets and configuration (create `.env` from `.env.example`):
+
+```bash
+# Database
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+POSTGRES_DB=civic_commons
+POSTGRES_USER=commons
+POSTGRES_PASSWORD=<generate-secure-password>
+
+# MCP Server
+MCP_API_KEY=<generate-secure-api-key>
+MCP_PORT=8080
+
+# Web Apps
+NEXTAUTH_SECRET=<generate-secure-secret>
+NEXTAUTH_URL=http://localhost:3000
+
+# Admin credentials (dev only — use OAuth in production)
+ADMIN_EMAIL=admin@localhost
+ADMIN_PASSWORD=<secure-password>
+
+# Optional: OAuth providers (production)
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+
+# Optional: Email (for newsletters/alerts)
+# SMTP_HOST=
+# SMTP_PORT=
+# SMTP_USER=
+# SMTP_PASSWORD=
+# EMAIL_FROM=
+
+# Optional: External services
+# SENTRY_DSN=                    # Error tracking
+# LOGFLARE_API_KEY=              # Log aggregation
+```
+
+15. Open Questions / TODO
+
+### Architecture
 - [ ] Define admin user roles (single admin vs. multi-user with permissions?)
 - [ ] Backup strategy for PostgreSQL data
-- [ ] Logging aggregation approach (stdout? file? external service?)
+- [ ] Logging aggregation approach (stdout? file? Loki? external?)
+- [ ] Change detection strategy for source sync
+
+### Features (Need Design)
+- [ ] How do community-voted "stories" work? Moderation?
+- [ ] What triggers a "Dig Deeper" option? Manual curation or automatic?
+- [ ] How to handle controversial topics neutrally?
+- [ ] Business spotlight selection criteria — random? Nominated?
+- [ ] Public records request integration — link out or actual integration?
+
+### Content
+- [ ] What community sources to include at launch?
+- [ ] Who moderates community comments?
+- [ ] Newsletter content curation — automated or manual?

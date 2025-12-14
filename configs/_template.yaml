@@ -1,0 +1,87 @@
+# City Configuration Template
+# Copy this file and rename to <your-city>.yaml
+
+# =============================================================================
+# IDENTITY
+# =============================================================================
+city_profile:
+  name: "Your City, ST"
+  zip: "00000"
+  timezone: "America/New_York"  # See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+
+# =============================================================================
+# ASSISTANT PERSONALITY
+# =============================================================================
+assistant:
+  name: "Assistant"  # Give your bot a local name
+  persona: "A helpful assistant who provides accurate information about local government and community events."
+
+# =============================================================================
+# DATA SOURCES
+# =============================================================================
+# Each source requires:
+#   - name: Human-readable name
+#   - driver: Which scraper to use (civic_plus, aspnet_generic, libcal, rss, etc.)
+#   - schedule: Cron expression for when to scrape
+#   - params: Driver-specific configuration
+#   - rate_limit: Politeness settings (optional, has defaults)
+#   - retry: Failure handling (optional, has defaults)
+
+sources:
+  # Example: City Council using CivicPlus
+  - name: "City Council"
+    driver: "civic_plus"
+    schedule: "0 6 * * *"  # Daily at 6 AM
+    params:
+      base_url: "https://www.yourcity.gov"
+      agenda_center_id: "1"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+
+  # Example: School Board using ASP.NET site
+  # - name: "School Board"
+  #   driver: "aspnet_generic"
+  #   schedule: "0 */4 * * *"  # Every 4 hours
+  #   params:
+  #     url: "https://www.yourschools.org/meetings"
+  #   rate_limit:
+  #     delay_seconds: 3
+  #     max_concurrent: 1
+
+  # Example: Library using LibCal
+  # - name: "Public Library"
+  #   driver: "libcal"
+  #   schedule: "0 7 * * *"
+  #   params:
+  #     library_id: "yourcity"
+  #   rate_limit:
+  #     delay_seconds: 2
+
+  # Example: RSS Feed (universal fallback)
+  # - name: "Historical Society"
+  #   driver: "rss"
+  #   schedule: "0 8 * * *"
+  #   params:
+  #     feed_url: "https://yourhistory.org/events/feed"
+  #   rate_limit:
+  #     delay_seconds: 2
+
+# =============================================================================
+# PRIVATE/OPTIONAL SOURCES
+# =============================================================================
+# These are disabled by default. Set enabled: true to activate.
+
+private_sources:
+  # Example: Chamber of Commerce
+  # - name: "Chamber of Commerce"
+  #   driver: "rss"
+  #   enabled: false
+  #   schedule: "0 8 * * *"
+  #   params:
+  #     feed_url: "https://yourchamber.com/events/feed"
+  #   rate_limit:
+  #     delay_seconds: 1

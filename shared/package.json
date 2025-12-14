@@ -1,0 +1,27 @@
+{
+  "name": "@civic-commons/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./db/index.ts",
+  "types": "./db/index.ts",
+  "exports": {
+    "./db": "./db/index.ts",
+    "./db/schema": "./db/schema.ts",
+    "./types": "./types/index.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate:pg",
+    "db:push": "drizzle-kit push:pg",
+    "db:studio": "drizzle-kit studio",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.30.0",
+    "postgres": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "drizzle-kit": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

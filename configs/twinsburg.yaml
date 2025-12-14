@@ -1,0 +1,106 @@
+# Twinsburg, OH Configuration
+# Reference implementation for Civic Commons
+
+# =============================================================================
+# IDENTITY
+# =============================================================================
+city_profile:
+  name: "Twinsburg, OH"
+  zip: "44087"
+  timezone: "America/New_York"
+
+# =============================================================================
+# ASSISTANT PERSONALITY
+# =============================================================================
+assistant:
+  name: "Wilcox"
+  persona: "A helpful local historian who values accuracy and community context. Named after the Wilcox House, a historic landmark in Twinsburg."
+
+# =============================================================================
+# PUBLIC DATA SOURCES
+# =============================================================================
+sources:
+  - name: "City Council"
+    driver: "civic_plus"
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      agenda_center_id: "5"
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  - name: "School Board"
+    driver: "aspnet_generic"
+    schedule: "0 */4 * * *"
+    params:
+      url: "https://www.twinsburg.k12.oh.us/meetingsandagendas.aspx"
+    rate_limit:
+      delay_seconds: 3
+      max_concurrent: 1
+
+  - name: "Public Library"
+    driver: "libcal"
+    schedule: "0 7 * * *"
+    params:
+      library_id: "twinsburg"
+    rate_limit:
+      delay_seconds: 2
+
+  - name: "Historical Society"
+    driver: "rss"
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://twinsburghistoricalsociety.org/events/feed"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  - name: "Parks & Recreation"
+    driver: "civic_rec"
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com/parks"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  - name: "Cleveland Metroparks"
+    driver: "metroparks"
+    schedule: "0 5 * * *"
+    params:
+      region: "cleveland"
+      locations:
+        - "bedford"
+        - "brecksville"
+        - "south-chagrin"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+# =============================================================================
+# PRIVATE/OPTIONAL SOURCES
+# =============================================================================
+private_sources:
+  - name: "Chamber of Commerce"
+    driver: "rss"
+    enabled: false
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://twinsburgchamber.com/events/feed"
+    rate_limit:
+      delay_seconds: 1
+
+  - name: "Community Facebook Groups"
+    driver: "facebook_events"
+    enabled: false
+    schedule: "0 */6 * * *"
+    params:
+      group_ids:
+        - "twinsburg-community"
+    rate_limit:
+      delay_seconds: 5
+      max_concurrent: 1
