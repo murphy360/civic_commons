@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS events (
     end_time TIMESTAMP,
     location VARCHAR(512),
     source_url TEXT,
+    video_url TEXT,
+    -- video_url: YouTube, Vimeo, or other video platform URL for meeting recording
     raw_data JSONB,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
@@ -96,6 +98,24 @@ CREATE INDEX IF NOT EXISTS documents_document_type_idx ON documents(document_typ
 CREATE INDEX IF NOT EXISTS documents_published_date_idx ON documents(published_date);
 CREATE INDEX IF NOT EXISTS documents_external_id_idx ON documents(source_id, external_id);
 CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_vector);
+
+-- =============================================================================
+-- Event-Document Association
+-- =============================================================================
+-- Links documents to their related events (e.g., agenda/minutes for a meeting)
+CREATE TABLE IF NOT EXISTS event_documents (
+    id SERIAL PRIMARY KEY,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    relationship VARCHAR(64) NOT NULL DEFAULT 'related',
+    -- relationship types: 'agenda', 'minutes', 'packet', 'video', 'transcript', 'attachment', 'related'
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    UNIQUE(event_id, document_id)
+);
+
+CREATE INDEX IF NOT EXISTS event_documents_event_id_idx ON event_documents(event_id);
+CREATE INDEX IF NOT EXISTS event_documents_document_id_idx ON event_documents(document_id);
+CREATE INDEX IF NOT EXISTS event_documents_relationship_idx ON event_documents(relationship);
 
 -- Trigger to update search_vector
 CREATE OR REPLACE FUNCTION documents_search_trigger() RETURNS trigger AS $$
@@ -223,6 +243,81 @@ VALUES
     ('twinsburg', 'Cleveland Metroparks', 'metroparks', 'json_api', 'https://www.clevelandmetroparks.com/api/events', '{"region": "twinsburg"}', 86400);
 
 -- =============================================================================
+-- Seed Data: Sample Events
+-- =============================================================================
+INSERT INTO events (source_id, external_id, title, description, start_time, end_time, location, source_url, video_url)
+VALUES 
+    -- Past City Council meetings with real video
+    (1, 'cc-2025-10-28', 'City Council Meeting', 'Regular session of Twinsburg City Council.', '2025-10-28 19:00:00', '2025-10-28 21:00:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', 'https://www.youtube.com/live/mx1bKdi5OyI'),
+    -- Past City Council meeting (has minutes + placeholder video)
+    (1, 'cc-2025-12-03', 'City Council Meeting', 'Regular session of Twinsburg City Council.', '2025-12-03 19:00:00', '2025-12-03 21:00:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', NULL),
+    -- Upcoming City Council meeting (has agenda, no video yet)
+    (1, 'cc-2025-12-17', 'City Council Meeting', 'Regular session of Twinsburg City Council. Public comment period at 7:15 PM.', '2025-12-17 19:00:00', '2025-12-17 21:00:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', NULL),
+    -- Planning Commission
+    (1, 'pc-2025-12-19', 'Planning Commission Meeting', 'Review of zoning variance requests and site plan approvals.', '2025-12-19 18:30:00', '2025-12-19 20:30:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', NULL),
+    -- School Board (placeholder - replace with real video URLs when available)
+    (2, 'sb-2025-11-18', 'School Board Meeting', 'Monthly school board meeting. Budget review and curriculum updates.', '2025-11-18 18:00:00', '2025-11-18 20:00:00', 'Twinsburg High School, 10084 Ravenna Rd', 'https://www.twinsburg.k12.oh.us', NULL),
+    (2, 'sb-2025-12-16', 'School Board Meeting', 'Monthly school board meeting.', '2025-12-16 18:00:00', '2025-12-16 20:00:00', 'Twinsburg High School, 10084 Ravenna Rd', 'https://www.twinsburg.k12.oh.us', NULL),
+    -- Library events (no video)
+    (3, 'lib-storytime-1221', 'Holiday Story Time', 'Join us for holiday stories and crafts! Ages 3-7.', '2025-12-21 10:00:00', '2025-12-21 11:00:00', 'Twinsburg Public Library', 'https://cuyahogalibrary.libcal.com', NULL),
+    (3, 'lib-bookclub-1218', 'Book Club: Winter Reads', 'Discussion of this months selection. New members welcome!', '2025-12-18 19:00:00', '2025-12-18 20:30:00', 'Twinsburg Public Library', 'https://cuyahogalibrary.libcal.com', NULL),
+    -- Parks event (no video)
+    (5, 'parks-winter-1222', 'Winter Wonderland in the Park', 'Family fun event with hot cocoa, caroling, and Santa!', '2025-12-22 14:00:00', '2025-12-22 17:00:00', 'Twinsburg Town Square', 'https://www.mytwinsburg.com/parks', NULL);
+
+-- =============================================================================
+-- Seed Data: Sample Documents
+-- =============================================================================
+INSERT INTO documents (source_id, external_id, title, document_type, content_text, source_url, published_date)
+VALUES 
+    -- City Council Dec 3 meeting documents
+    (1, 'cc-agenda-2025-12-03', 'City Council Agenda - December 3, 2025', 'agenda', 
+     'AGENDA - Twinsburg City Council Regular Meeting, December 3, 2025 at 7:00 PM. 1. Call to Order. 2. Roll Call. 3. Approval of Minutes from November 19. 4. Public Comment Period. 5. Ordinance 2025-45: Street improvement project. 6. Resolution 2025-87: Emergency services contract. 7. Finance Committee Report. 8. City Manager Report. 9. Council Comments. 10. Adjournment.',
+     'https://www.mytwinsburg.com/AgendaCenter', '2025-12-01'),
+    (1, 'cc-minutes-2025-12-03', 'City Council Minutes - December 3, 2025', 'minutes', 
+     'MINUTES - Twinsburg City Council Regular Meeting, December 3, 2025. Council President Smith called the meeting to order at 7:00 PM. Roll call: All members present. Motion to approve minutes from November 19 meeting passed unanimously. Public comment period: Three residents spoke regarding proposed zoning changes on Darrow Road. Finance Director presented Q3 budget update showing revenues exceeding projections by 3.2%. Ordinance 2025-45 approved 6-1. Resolution 2025-87 approved unanimously. Meeting adjourned at 9:15 PM.',
+     'https://www.mytwinsburg.com/AgendaCenter', '2025-12-04'),
+    -- City Council Dec 17 meeting documents
+    (1, 'cc-agenda-2025-12-17', 'City Council Agenda - December 17, 2025', 'agenda', 
+     'AGENDA - Twinsburg City Council Regular Meeting, December 17, 2025 at 7:00 PM. 1. Call to Order. 2. Roll Call. 3. Approval of Minutes from December 3. 4. Public Comment Period (7:15 PM). 5. Ordinance 2025-47: Rezoning request for 1234 Ravenna Road. 6. Resolution 2025-89: Snow removal contract renewal. 7. Finance Committee Report - Year End Review. 8. City Manager Report. 9. Council Comments. 10. Adjournment.',
+     'https://www.mytwinsburg.com/AgendaCenter', '2025-12-13'),
+    -- School Board documents
+    (2, 'sb-agenda-2025-11-18', 'School Board Agenda - November 18, 2025', 'agenda',
+     'AGENDA - Twinsburg City School District Board of Education, November 18, 2025. 1. Call to Order. 2. Pledge of Allegiance. 3. Approval of Minutes. 4. Superintendent Report - Literacy Initiative Update. 5. Treasurer Report. 6. New Business: Science Lab Equipment Purchase. 7. 2026-2027 Academic Calendar Discussion. 8. Public Comment. 9. Adjournment.',
+     'https://www.twinsburg.k12.oh.us', '2025-11-15'),
+    (2, 'sb-minutes-2025-11-18', 'School Board Minutes - November 18, 2025', 'minutes', 
+     'MINUTES - Twinsburg City School District Board of Education, November 18, 2025. Meeting called to order at 6:00 PM. All board members present. Superintendent Williams presented update on literacy initiative showing 12% improvement in K-3 reading scores. Board approved purchase of new science lab equipment for high school ($45,000). Discussion of proposed 2026-2027 academic calendar - first day August 18, last day May 28. Public comment: Two parents spoke in support of extended library hours. Meeting adjourned at 7:45 PM.',
+     'https://www.twinsburg.k12.oh.us', '2025-11-19');
+
+-- =============================================================================
+-- Seed Data: Event-Document Associations
+-- =============================================================================
+-- Link documents to their events
+INSERT INTO event_documents (event_id, document_id, relationship)
+SELECT e.id, d.id, 'agenda'
+FROM events e, documents d
+WHERE e.external_id = 'cc-2025-12-03' AND d.external_id = 'cc-agenda-2025-12-03';
+
+INSERT INTO event_documents (event_id, document_id, relationship)
+SELECT e.id, d.id, 'minutes'
+FROM events e, documents d
+WHERE e.external_id = 'cc-2025-12-03' AND d.external_id = 'cc-minutes-2025-12-03';
+
+INSERT INTO event_documents (event_id, document_id, relationship)
+SELECT e.id, d.id, 'agenda'
+FROM events e, documents d
+WHERE e.external_id = 'cc-2025-12-17' AND d.external_id = 'cc-agenda-2025-12-17';
+
+INSERT INTO event_documents (event_id, document_id, relationship)
+SELECT e.id, d.id, 'agenda'
+FROM events e, documents d
+WHERE e.external_id = 'sb-2025-11-18' AND d.external_id = 'sb-agenda-2025-11-18';
+
+INSERT INTO event_documents (event_id, document_id, relationship)
+SELECT e.id, d.id, 'minutes'
+FROM events e, documents d
+WHERE e.external_id = 'sb-2025-11-18' AND d.external_id = 'sb-minutes-2025-11-18';
+
+-- =============================================================================
 -- Done
 -- =============================================================================
 DO $$
@@ -230,4 +325,7 @@ BEGIN
     RAISE NOTICE 'Civic Commons database initialized successfully!';
     RAISE NOTICE 'Cities: %', (SELECT COUNT(*) FROM cities);
     RAISE NOTICE 'Sources: %', (SELECT COUNT(*) FROM sources);
+    RAISE NOTICE 'Events: %', (SELECT COUNT(*) FROM events);
+    RAISE NOTICE 'Documents: %', (SELECT COUNT(*) FROM documents);
+    RAISE NOTICE 'Event-Document links: %', (SELECT COUNT(*) FROM event_documents);
 END $$;
