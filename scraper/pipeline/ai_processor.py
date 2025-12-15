@@ -9,17 +9,18 @@ This module provides intelligent processing of scraped events:
 - Categorizes events by type
 
 Can be used standalone or via MCP tools.
+
+Note: Low-level API client and PDF extraction have been moved to:
+- pipeline.ai.client.GeminiClient
+- pipeline.ai.pdf_extractor.extract_pdf_text
 """
 
 import json
 import logging
-import os
-from datetime import datetime
 from typing import Optional
 
-import httpx
-
 from models import Event, EventType
+from .ai import GeminiClient, extract_pdf_text
 
 logger = logging.getLogger("civic.ai")
 
@@ -29,10 +30,8 @@ class AIEventProcessor:
     Process and enrich events using AI.
     
     Supports Gemini (default) and can be extended for other providers.
+    This class acts as a facade, delegating to specialized modules.
     """
-    
-    # Use gemini-2.0-flash which is available in the API
-    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     
     def __init__(self, api_key: Optional[str] = None, provider: str = "gemini"):
         """
@@ -43,78 +42,32 @@ class AIEventProcessor:
             provider: AI provider to use ("gemini", "openai", "anthropic")
         """
         self.provider = provider
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
-        
-        if not self.api_key:
-            logger.warning("No AI API key configured - AI processing disabled")
-        
-        self._client: Optional[httpx.AsyncClient] = None
+        self._gemini = GeminiClient(api_key)
     
     @property
     def enabled(self) -> bool:
         """Check if AI processing is enabled."""
-        return bool(self.api_key)
+        return self._gemini.enabled
     
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=30.0)
-        return self._client
+    @property
+    def api_key(self) -> Optional[str]:
+        """Get the API key (for backward compatibility)."""
+        return self._gemini.api_key
     
     async def close(self) -> None:
         """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        await self._gemini.close()
     
     async def _call_gemini(self, prompt: str, system_prompt: Optional[str] = None) -> Optional[str]:
         """
         Call Gemini API with a prompt.
         
+        Delegates to GeminiClient.generate().
+        
         Returns:
             Generated text response or None on error
         """
-        if not self.api_key:
-            return None
-        
-        client = await self._get_client()
-        
-        # Build the request
-        contents = []
-        if system_prompt:
-            contents.append({
-                "role": "user",
-                "parts": [{"text": system_prompt}]
-            })
-            contents.append({
-                "role": "model", 
-                "parts": [{"text": "I understand. I'll follow these instructions."}]
-            })
-        
-        contents.append({
-            "role": "user",
-            "parts": [{"text": prompt}]
-        })
-        
-        try:
-            response = await client.post(
-                f"{self.GEMINI_API_URL}?key={self.api_key}",
-                json={
-                    "contents": contents,
-                    "generationConfig": {
-                        "temperature": 0.1,  # Low temperature for consistent outputs
-                        "maxOutputTokens": 1024,
-                    }
-                }
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-            
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            return None
+        return await self._gemini.generate(prompt, system_prompt)
     
     async def normalize_event(self, event: Event, source_context: str = "") -> Event:
         """
@@ -740,6 +693,8 @@ Generate a concise, helpful summary:"""
         """
         Extract text from a PDF file for AI analysis.
         
+        Delegates to pipeline.ai.pdf_extractor.extract_pdf_text().
+        
         Args:
             local_path: Path to the PDF file
             max_pages: Maximum number of pages to extract (to limit token usage)
@@ -747,34 +702,7 @@ Generate a concise, helpful summary:"""
         Returns:
             Extracted text or None if extraction fails
         """
-        try:
-            import fitz  # PyMuPDF
-            
-            # Handle relative paths - assume /data/documents base
-            if not local_path.startswith('/'):
-                full_path = f"/data/documents/{local_path}"
-            else:
-                full_path = local_path
-            
-            doc = fitz.open(full_path)
-            text_parts = []
-            
-            for page_num in range(min(len(doc), max_pages)):
-                page = doc[page_num]
-                text_parts.append(page.get_text())
-            
-            doc.close()
-            
-            full_text = "\n".join(text_parts)
-            logger.debug(f"Extracted {len(full_text)} chars from PDF: {local_path}")
-            return full_text
-            
-        except ImportError:
-            logger.debug("PyMuPDF not available for PDF text extraction")
-            return None
-        except Exception as e:
-            logger.warning(f"Failed to extract PDF text from {local_path}: {e}")
-            return None
+        return await extract_pdf_text(local_path, max_pages)
 
 
 # Singleton instance for reuse
