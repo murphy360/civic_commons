@@ -19,6 +19,9 @@ export async function GET(request: Request) {
           d.document_type,
           d.content_text,
           d.source_url,
+          d.local_path,
+          d.file_size_bytes,
+          d.mime_type,
           d.published_date,
           s.name as source_name,
           ts_rank(d.search_vector, plainto_tsquery('english', ${query})) as rank
@@ -37,6 +40,9 @@ export async function GET(request: Request) {
           d.document_type,
           d.content_text,
           d.source_url,
+          d.local_path,
+          d.file_size_bytes,
+          d.mime_type,
           d.published_date,
           s.name as source_name
         FROM documents d

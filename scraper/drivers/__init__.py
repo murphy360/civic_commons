@@ -9,6 +9,8 @@ from typing import Type
 
 from .base import BaseDriver
 from .civic_plus import CivicPlusDriver
+from .civic_plus_calendar import CivicPlusCalendarDriver
+from .civic_plus_rss import CivicPlusRssDriver
 from .aspnet_generic import AspNetGenericDriver
 from .rss import RssDriver
 from .libcal import LibCalDriver
@@ -16,6 +18,8 @@ from .libcal import LibCalDriver
 # Driver registry: maps driver name to class
 DRIVER_REGISTRY: dict[str, Type[BaseDriver]] = {
     "civic_plus": CivicPlusDriver,
+    "civic_plus_calendar": CivicPlusCalendarDriver,
+    "civic_plus_rss": CivicPlusRssDriver,
     "aspnet_generic": AspNetGenericDriver,
     "rss": RssDriver,
     "libcal": LibCalDriver,

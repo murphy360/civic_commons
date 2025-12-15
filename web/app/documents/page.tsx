@@ -9,6 +9,8 @@ interface Document {
   document_type: string | null;
   content_text: string | null;
   source_url: string | null;
+  local_path: string | null;
+  file_size_bytes: number | null;
   published_date: Date | null;
   source_name: string;
 }
@@ -22,6 +24,8 @@ async function getDocuments(): Promise<Document[]> {
         d.document_type,
         d.content_text,
         d.source_url,
+        d.local_path,
+        d.file_size_bytes,
         d.published_date,
         s.name as source_name
       FROM documents d
@@ -45,6 +49,18 @@ function formatDate(date: Date | null): string {
   });
 }
 
+function formatFileSize(bytes: number | null): string {
+  if (!bytes) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+  return `${size.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function getDocumentTypeLabel(type: string | null): string {
   const labels: Record<string, string> = {
     minutes: 'Meeting Minutes',
@@ -53,6 +69,7 @@ function getDocumentTypeLabel(type: string | null): string {
     ordinance: 'Ordinance',
     report: 'Report',
     notice: 'Public Notice',
+    attachment: 'Attachment',
   };
   return labels[type || ''] || type || 'Document';
 }
@@ -65,6 +82,7 @@ function getDocumentTypeBadgeColor(type: string | null): string {
     ordinance: 'bg-orange-100 text-orange-800',
     report: 'bg-gray-100 text-gray-800',
     notice: 'bg-yellow-100 text-yellow-800',
+    attachment: 'bg-slate-100 text-slate-800',
   };
   return colors[type || ''] || 'bg-gray-100 text-gray-800';
 }
@@ -155,18 +173,41 @@ export default async function DocumentsPage() {
                     </div>
                   </div>
                   {doc.source_url && (
-                    <div>
-                      <a
-                        href={doc.source_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md border hover:bg-accent transition-colors"
+                    <div className="flex flex-col gap-2">
+                      {/* Read button - links to document detail page */}
+                      <Link
+                        href={`/documents/${doc.id}`}
+                        className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
                       >
-                        View Source
+                        Read
                         <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
-                      </a>
+                      </Link>
+                      
+                      {/* Download button - prefers local file */}
+                      {(doc.local_path || doc.source_url) && (
+                        <a
+                          href={doc.local_path ? `/api/files/${doc.local_path}` : doc.source_url!}
+                          target={doc.local_path ? undefined : "_blank"}
+                          rel={doc.local_path ? undefined : "noopener noreferrer"}
+                          className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-md border hover:bg-accent transition-colors"
+                        >
+                          {doc.local_path ? 'Download' : 'View Source'}
+                          {doc.local_path && doc.file_size_bytes && (
+                            <span className="text-xs text-muted-foreground">
+                              ({formatFileSize(doc.file_size_bytes)})
+                            </span>
+                          )}
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            {doc.local_path ? (
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            ) : (
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            )}
+                          </svg>
+                        </a>
+                      )}
                     </div>
                   )}
                 </div>

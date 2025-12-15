@@ -23,6 +23,7 @@ class DocumentType(str, Enum):
     REPORT = "report"           # Staff reports
     PRESENTATION = "presentation"  # Slide decks
     NOTICE = "notice"           # Public notices
+    ATTACHMENT = "attachment"   # General event attachments
     OTHER = "other"
 
 

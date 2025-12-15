@@ -25,7 +25,47 @@ sources:
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
-      agenda_center_id: "5"
+      categories:
+        - "City Council"
+        - "Finance Committee"
+        - "Safety Committee"
+        - "Public Works Committee"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  - name: "Planning & Zoning"
+    driver: "civic_plus"
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Planning Commission"
+        - "Board of Zoning Appeals"
+        - "Architecture Review Board"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  - name: "Boards & Commissions"
+    driver: "civic_plus"
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Parks & Recreation Commission"
+        - "Environmental Commission"
+        - "Civil Service Commission"
+        - "Capital Improvement Board"
+      max_years: 2
     retry:
       max_attempts: 3
       backoff_seconds: 60
@@ -35,6 +75,7 @@ sources:
 
   - name: "School Board"
     driver: "aspnet_generic"
+    enabled: false  # Temporarily disabled - site too slow, causes timeouts
     schedule: "0 */4 * * *"
     params:
       url: "https://www.twinsburg.k12.oh.us/meetingsandagendas.aspx"
@@ -46,7 +87,8 @@ sources:
     driver: "libcal"
     schedule: "0 7 * * *"
     params:
-      library_id: "twinsburg"
+      library_id: "twinsburglibrary"
+      iid: 4446  # LibCal institutional ID
     rate_limit:
       delay_seconds: 2
 
@@ -59,24 +101,87 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
+  # HTML Calendar scraper - gets events further into the future than RSS
   - name: "Parks & Recreation"
-    driver: "civic_rec"
+    driver: "civic_plus_calendar"
     schedule: "0 6 * * *"
     params:
-      base_url: "https://www.mytwinsburg.com/parks"
+      base_url: "https://www.mytwinsburg.com"
+      calendar_ids:
+        - 22  # Parks & Recreation
+      days_ahead: 90
+      days_back: 7
     rate_limit:
       delay_seconds: 2
       max_concurrent: 1
 
-  - name: "Cleveland Metroparks"
-    driver: "metroparks"
+  - name: "Community Events"
+    driver: "civic_plus_calendar"
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      calendar_ids:
+        - 14  # Main Calendar
+      days_ahead: 90
+      days_back: 7
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # RSS-based sources (lightweight alternative to HTML scraping)
+  - name: "City Council RSS"
+    driver: "civic_plus_rss"
+    schedule: "30 */2 * * *"  # Every 2 hours for quick updates
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      module: "agenda"
+      categories:
+        - "city_council"
+        - "planning_commission"
+        - "finance_committee"
+    rate_limit:
+      delay_seconds: 1
+      max_concurrent: 1
+
+  - name: "Calendar RSS"
+    driver: "civic_plus_rss"
+    schedule: "0 */4 * * *"  # Every 4 hours
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      module: "calendar"
+      categories:
+        - "main"
+        - "parks_recreation"
+        - "community_events"
+      fetch_full_details: true  # Fetch full descriptions and documents from event pages
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # Summit Metroparks uses bot protection (403 Forbidden with standard HTTP clients)
+  # Would need Playwright-based driver to bypass protection
+  # Website: https://www.summitmetroparks.org/
+  # Events RSS: https://www.summitmetroparks.org/programs-events/feed/
+  - name: "Summit Metroparks"
+    driver: "rss"
+    enabled: false  # Disabled - bot protection requires Playwright
     schedule: "0 5 * * *"
     params:
-      region: "cleveland"
-      locations:
-        - "bedford"
-        - "brecksville"
-        - "south-chagrin"
+      feed_url: "https://www.summitmetroparks.org/programs-events/feed/"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # Cleveland Metroparks uses a WebTrac system (myvscloud.com) for events
+  # which doesn't have an RSS feed. Would need a custom driver with Playwright.
+  # Website: https://www.clevelandmetroparks.com/
+  # Events: https://ohclevelandmetroparksweb.myvscloud.com/webtrac/web/
+  - name: "Cleveland Metroparks"
+    driver: "rss"
+    enabled: false  # Disabled - no RSS feed available, needs custom WebTrac driver
+    schedule: "0 5 * * *"
+    params:
+      feed_url: "https://www.clevelandmetroparks.com/feed/"  # Does not exist
     rate_limit:
       delay_seconds: 2
       max_concurrent: 1

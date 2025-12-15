@@ -35,6 +35,7 @@ class BaseDriver(ABC):
         self,
         source_config: SourceConfig,
         city_config: CityConfig,
+        params_override: dict = None,
     ):
         """
         Initialize the driver.
@@ -42,15 +43,24 @@ class BaseDriver(ABC):
         Args:
             source_config: Configuration for this specific source
             city_config: Configuration for the city (for context)
+            params_override: Optional dict to override source params (for backfill)
         """
         self.source_config = source_config
         self.city_config = city_config
-        self.params = source_config.params
+        
+        # Merge params with override (for backfill date ranges)
+        self.params = dict(source_config.params) if source_config.params else {}
+        if params_override:
+            self.params.update(params_override)
+        
         self.rate_limit = source_config.rate_limit
         
         # For logging context
         self.source_name = source_config.name
         self.city_name = city_config.city_profile.name
+        
+        # Backfill mode flag
+        self.backfill_mode = self.params.get("backfill_mode", False)
 
     @abstractmethod
     async def fetch(self) -> tuple[list[Event], list[Document]]:
@@ -104,6 +114,10 @@ class BaseDriver(ABC):
             f"[{self.city_name}/{self.source_name}] {message}",
             exc_info=exc,
         )
+
+    def log_warning(self, message: str) -> None:
+        """Log a warning message with source context."""
+        logger.warning(f"[{self.city_name}/{self.source_name}] {message}")
 
     def log_debug(self, message: str) -> None:
         """Log a debug message with source context."""

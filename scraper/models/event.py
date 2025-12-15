@@ -5,12 +5,16 @@ Consumed by: drivers/, pipeline/storage.py
 Side effects: None
 """
 
+from __future__ import annotations  # Allow forward references
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from .document import Document
 
 
 class EventType(str, Enum):
@@ -54,6 +58,9 @@ class Event(BaseModel):
     
     # Source reference
     source_url: Optional[str] = None  # Link back to original
+    
+    # Associated documents (agendas, minutes, attachments)
+    documents: list = Field(default_factory=list)  # List[Document]
     
     # Metadata
     tags: list[str] = Field(default_factory=list)

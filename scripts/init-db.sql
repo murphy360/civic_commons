@@ -49,28 +49,49 @@ CREATE INDEX IF NOT EXISTS sources_city_id_idx ON sources(city_id);
 CREATE INDEX IF NOT EXISTS sources_source_type_idx ON sources(source_type);
 
 -- =============================================================================
--- Events
+-- Events (canonical event data - deduplicated across sources)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS events (
     id SERIAL PRIMARY KEY,
-    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-    external_id VARCHAR(256),
     title VARCHAR(512) NOT NULL,
     description TEXT,
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP,
     location VARCHAR(512),
-    source_url TEXT,
-    video_url TEXT,
-    -- video_url: YouTube, Vimeo, or other video platform URL for meeting recording
-    raw_data JSONB,
+    category VARCHAR(128),             -- Event category (meeting, recreation, community, etc.)
+    is_cancelled BOOLEAN DEFAULT FALSE,
+    is_virtual BOOLEAN DEFAULT FALSE,
+    virtual_url TEXT,
+    video_url TEXT,                    -- Recording URL (YouTube, Vimeo, etc.)
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS events_source_id_idx ON events(source_id);
 CREATE INDEX IF NOT EXISTS events_start_time_idx ON events(start_time);
-CREATE INDEX IF NOT EXISTS events_external_id_idx ON events(source_id, external_id);
+CREATE INDEX IF NOT EXISTS events_category_idx ON events(category);
+-- Trigram index for fuzzy title matching
+CREATE INDEX IF NOT EXISTS events_title_trgm_idx ON events USING GIN(title gin_trgm_ops);
+
+-- =============================================================================
+-- Event Sources (tracks which sources reported each event)
+-- =============================================================================
+-- An event can come from multiple sources (e.g., same meeting on RSS + HTML calendar)
+CREATE TABLE IF NOT EXISTS event_sources (
+    id SERIAL PRIMARY KEY,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    external_id VARCHAR(256),          -- The ID this source uses for the event
+    source_url TEXT,                   -- URL to event on this source
+    raw_data JSONB,                    -- Original data from this source
+    first_seen_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    last_seen_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    UNIQUE(event_id, source_id),
+    UNIQUE(source_id, external_id)     -- Each source can only have one entry per external_id
+);
+
+CREATE INDEX IF NOT EXISTS event_sources_event_id_idx ON event_sources(event_id);
+CREATE INDEX IF NOT EXISTS event_sources_source_id_idx ON event_sources(source_id);
+CREATE INDEX IF NOT EXISTS event_sources_external_id_idx ON event_sources(source_id, external_id);
 
 -- =============================================================================
 -- Documents
@@ -86,6 +107,9 @@ CREATE TABLE IF NOT EXISTS documents (
     source_url TEXT,
     file_url TEXT,
     file_hash VARCHAR(64),
+    local_path TEXT,                   -- Local file path for downloaded files
+    file_size_bytes BIGINT,            -- File size in bytes
+    mime_type VARCHAR(128),            -- MIME type of the file
     published_date TIMESTAMP,
     raw_data JSONB,
     search_vector TSVECTOR,
@@ -221,6 +245,71 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =============================================================================
+-- Helper Functions for Event Deduplication
+-- =============================================================================
+
+-- Find events with similar titles within a time window
+CREATE OR REPLACE FUNCTION find_similar_events(
+    p_title TEXT,
+    p_start_time TIMESTAMP,
+    p_time_window INTERVAL DEFAULT '4 hours'
+) RETURNS TABLE (
+    event_id INTEGER,
+    title VARCHAR(512),
+    start_time TIMESTAMP,
+    location VARCHAR(512),
+    category VARCHAR(128),
+    similarity REAL,
+    source_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        e.id as event_id,
+        e.title,
+        e.start_time,
+        e.location,
+        e.category,
+        similarity(e.title, p_title) as similarity,
+        COUNT(DISTINCT es.source_id) as source_count
+    FROM events e
+    LEFT JOIN event_sources es ON e.id = es.event_id
+    WHERE 
+        -- Time window match
+        e.start_time BETWEEN (p_start_time - p_time_window) AND (p_start_time + p_time_window)
+        -- Title similarity threshold (0.3 is fairly loose)
+        AND similarity(e.title, p_title) > 0.3
+    GROUP BY e.id, e.title, e.start_time, e.location, e.category
+    ORDER BY similarity(e.title, p_title) DESC
+    LIMIT 10;
+END;
+$$ LANGUAGE plpgsql;
+
+-- View for events with all their sources
+CREATE OR REPLACE VIEW events_with_sources AS
+SELECT 
+    e.id,
+    e.title,
+    e.description,
+    e.start_time,
+    e.end_time,
+    e.location,
+    e.category,
+    e.is_cancelled,
+    e.is_virtual,
+    e.virtual_url,
+    e.video_url,
+    e.created_at,
+    e.updated_at,
+    COALESCE(array_agg(DISTINCT s.name) FILTER (WHERE s.name IS NOT NULL), ARRAY[]::VARCHAR[]) as source_names,
+    COALESCE(array_agg(DISTINCT es.source_url) FILTER (WHERE es.source_url IS NOT NULL), ARRAY[]::TEXT[]) as source_urls,
+    COUNT(DISTINCT es.source_id) as source_count
+FROM events e
+LEFT JOIN event_sources es ON e.id = es.event_id
+LEFT JOIN sources s ON es.source_id = s.id
+GROUP BY e.id;
+
+-- =============================================================================
 -- Seed Data: Twinsburg Configuration
 -- =============================================================================
 INSERT INTO cities (city_id, display_name, assistant_name, assistant_persona, timezone)
@@ -232,91 +321,6 @@ VALUES (
     'America/New_York'
 );
 
--- Insert sources for Twinsburg
-INSERT INTO sources (city_id, name, source_type, driver_type, url, config, schedule_interval)
-VALUES 
-    ('twinsburg', 'City Council', 'city_council', 'civic_plus', 'https://www.mytwinsburg.com/AgendaCenter', '{"selectors": {"event_list": ".meeting-list"}}', 86400),
-    ('twinsburg', 'School Board', 'school_board', 'civic_plus', 'https://www.twinsburg.k12.oh.us/BoardOfEducation', '{}', 14400),
-    ('twinsburg', 'Public Library', 'library', 'libcal', 'https://cuyahogalibrary.libcal.com', '{"library_id": "twinsburg"}', 86400),
-    ('twinsburg', 'Historical Society', 'historical_society', 'rss', 'https://twinsburghistoricalsociety.org/feed/', '{}', 86400),
-    ('twinsburg', 'Parks & Recreation', 'parks_and_rec', 'civic_plus', 'https://www.mytwinsburg.com/parks', '{}', 86400),
-    ('twinsburg', 'Cleveland Metroparks', 'metroparks', 'json_api', 'https://www.clevelandmetroparks.com/api/events', '{"region": "twinsburg"}', 86400);
-
--- =============================================================================
--- Seed Data: Sample Events
--- =============================================================================
-INSERT INTO events (source_id, external_id, title, description, start_time, end_time, location, source_url, video_url)
-VALUES 
-    -- Past City Council meetings with real video
-    (1, 'cc-2025-10-28', 'City Council Meeting', 'Regular session of Twinsburg City Council.', '2025-10-28 19:00:00', '2025-10-28 21:00:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', 'https://www.youtube.com/live/mx1bKdi5OyI'),
-    -- Past City Council meeting (has minutes + placeholder video)
-    (1, 'cc-2025-12-03', 'City Council Meeting', 'Regular session of Twinsburg City Council.', '2025-12-03 19:00:00', '2025-12-03 21:00:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', NULL),
-    -- Upcoming City Council meeting (has agenda, no video yet)
-    (1, 'cc-2025-12-17', 'City Council Meeting', 'Regular session of Twinsburg City Council. Public comment period at 7:15 PM.', '2025-12-17 19:00:00', '2025-12-17 21:00:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', NULL),
-    -- Planning Commission
-    (1, 'pc-2025-12-19', 'Planning Commission Meeting', 'Review of zoning variance requests and site plan approvals.', '2025-12-19 18:30:00', '2025-12-19 20:30:00', 'Twinsburg City Hall, 10075 Ravenna Rd', 'https://www.mytwinsburg.com/AgendaCenter', NULL),
-    -- School Board (placeholder - replace with real video URLs when available)
-    (2, 'sb-2025-11-18', 'School Board Meeting', 'Monthly school board meeting. Budget review and curriculum updates.', '2025-11-18 18:00:00', '2025-11-18 20:00:00', 'Twinsburg High School, 10084 Ravenna Rd', 'https://www.twinsburg.k12.oh.us', NULL),
-    (2, 'sb-2025-12-16', 'School Board Meeting', 'Monthly school board meeting.', '2025-12-16 18:00:00', '2025-12-16 20:00:00', 'Twinsburg High School, 10084 Ravenna Rd', 'https://www.twinsburg.k12.oh.us', NULL),
-    -- Library events (no video)
-    (3, 'lib-storytime-1221', 'Holiday Story Time', 'Join us for holiday stories and crafts! Ages 3-7.', '2025-12-21 10:00:00', '2025-12-21 11:00:00', 'Twinsburg Public Library', 'https://cuyahogalibrary.libcal.com', NULL),
-    (3, 'lib-bookclub-1218', 'Book Club: Winter Reads', 'Discussion of this months selection. New members welcome!', '2025-12-18 19:00:00', '2025-12-18 20:30:00', 'Twinsburg Public Library', 'https://cuyahogalibrary.libcal.com', NULL),
-    -- Parks event (no video)
-    (5, 'parks-winter-1222', 'Winter Wonderland in the Park', 'Family fun event with hot cocoa, caroling, and Santa!', '2025-12-22 14:00:00', '2025-12-22 17:00:00', 'Twinsburg Town Square', 'https://www.mytwinsburg.com/parks', NULL);
-
--- =============================================================================
--- Seed Data: Sample Documents
--- =============================================================================
-INSERT INTO documents (source_id, external_id, title, document_type, content_text, source_url, published_date)
-VALUES 
-    -- City Council Dec 3 meeting documents
-    (1, 'cc-agenda-2025-12-03', 'City Council Agenda - December 3, 2025', 'agenda', 
-     'AGENDA - Twinsburg City Council Regular Meeting, December 3, 2025 at 7:00 PM. 1. Call to Order. 2. Roll Call. 3. Approval of Minutes from November 19. 4. Public Comment Period. 5. Ordinance 2025-45: Street improvement project. 6. Resolution 2025-87: Emergency services contract. 7. Finance Committee Report. 8. City Manager Report. 9. Council Comments. 10. Adjournment.',
-     'https://www.mytwinsburg.com/AgendaCenter', '2025-12-01'),
-    (1, 'cc-minutes-2025-12-03', 'City Council Minutes - December 3, 2025', 'minutes', 
-     'MINUTES - Twinsburg City Council Regular Meeting, December 3, 2025. Council President Smith called the meeting to order at 7:00 PM. Roll call: All members present. Motion to approve minutes from November 19 meeting passed unanimously. Public comment period: Three residents spoke regarding proposed zoning changes on Darrow Road. Finance Director presented Q3 budget update showing revenues exceeding projections by 3.2%. Ordinance 2025-45 approved 6-1. Resolution 2025-87 approved unanimously. Meeting adjourned at 9:15 PM.',
-     'https://www.mytwinsburg.com/AgendaCenter', '2025-12-04'),
-    -- City Council Dec 17 meeting documents
-    (1, 'cc-agenda-2025-12-17', 'City Council Agenda - December 17, 2025', 'agenda', 
-     'AGENDA - Twinsburg City Council Regular Meeting, December 17, 2025 at 7:00 PM. 1. Call to Order. 2. Roll Call. 3. Approval of Minutes from December 3. 4. Public Comment Period (7:15 PM). 5. Ordinance 2025-47: Rezoning request for 1234 Ravenna Road. 6. Resolution 2025-89: Snow removal contract renewal. 7. Finance Committee Report - Year End Review. 8. City Manager Report. 9. Council Comments. 10. Adjournment.',
-     'https://www.mytwinsburg.com/AgendaCenter', '2025-12-13'),
-    -- School Board documents
-    (2, 'sb-agenda-2025-11-18', 'School Board Agenda - November 18, 2025', 'agenda',
-     'AGENDA - Twinsburg City School District Board of Education, November 18, 2025. 1. Call to Order. 2. Pledge of Allegiance. 3. Approval of Minutes. 4. Superintendent Report - Literacy Initiative Update. 5. Treasurer Report. 6. New Business: Science Lab Equipment Purchase. 7. 2026-2027 Academic Calendar Discussion. 8. Public Comment. 9. Adjournment.',
-     'https://www.twinsburg.k12.oh.us', '2025-11-15'),
-    (2, 'sb-minutes-2025-11-18', 'School Board Minutes - November 18, 2025', 'minutes', 
-     'MINUTES - Twinsburg City School District Board of Education, November 18, 2025. Meeting called to order at 6:00 PM. All board members present. Superintendent Williams presented update on literacy initiative showing 12% improvement in K-3 reading scores. Board approved purchase of new science lab equipment for high school ($45,000). Discussion of proposed 2026-2027 academic calendar - first day August 18, last day May 28. Public comment: Two parents spoke in support of extended library hours. Meeting adjourned at 7:45 PM.',
-     'https://www.twinsburg.k12.oh.us', '2025-11-19');
-
--- =============================================================================
--- Seed Data: Event-Document Associations
--- =============================================================================
--- Link documents to their events
-INSERT INTO event_documents (event_id, document_id, relationship)
-SELECT e.id, d.id, 'agenda'
-FROM events e, documents d
-WHERE e.external_id = 'cc-2025-12-03' AND d.external_id = 'cc-agenda-2025-12-03';
-
-INSERT INTO event_documents (event_id, document_id, relationship)
-SELECT e.id, d.id, 'minutes'
-FROM events e, documents d
-WHERE e.external_id = 'cc-2025-12-03' AND d.external_id = 'cc-minutes-2025-12-03';
-
-INSERT INTO event_documents (event_id, document_id, relationship)
-SELECT e.id, d.id, 'agenda'
-FROM events e, documents d
-WHERE e.external_id = 'cc-2025-12-17' AND d.external_id = 'cc-agenda-2025-12-17';
-
-INSERT INTO event_documents (event_id, document_id, relationship)
-SELECT e.id, d.id, 'agenda'
-FROM events e, documents d
-WHERE e.external_id = 'sb-2025-11-18' AND d.external_id = 'sb-agenda-2025-11-18';
-
-INSERT INTO event_documents (event_id, document_id, relationship)
-SELECT e.id, d.id, 'minutes'
-FROM events e, documents d
-WHERE e.external_id = 'sb-2025-11-18' AND d.external_id = 'sb-minutes-2025-11-18';
-
 -- =============================================================================
 -- Done
 -- =============================================================================
@@ -327,5 +331,5 @@ BEGIN
     RAISE NOTICE 'Sources: %', (SELECT COUNT(*) FROM sources);
     RAISE NOTICE 'Events: %', (SELECT COUNT(*) FROM events);
     RAISE NOTICE 'Documents: %', (SELECT COUNT(*) FROM documents);
-    RAISE NOTICE 'Event-Document links: %', (SELECT COUNT(*) FROM event_documents);
 END $$;
+

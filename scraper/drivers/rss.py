@@ -44,7 +44,16 @@ class RssDriver(BaseDriver):
 
         self.log_info(f"Fetching RSS feed: {feed_url}")
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/rss+xml, application/xml, application/atom+xml, text/xml, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+            }
+        ) as client:
             await self.rate_limit_delay()
             response = await client.get(feed_url)
             response.raise_for_status()

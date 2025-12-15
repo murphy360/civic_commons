@@ -13,7 +13,8 @@ interface Event {
   location: string | null;
   source_url: string | null;
   video_url: string | null;
-  source_name: string;
+  source_names: string;
+  source_count: number;
 }
 
 interface EventDocument {
@@ -35,12 +36,15 @@ async function getEvent(id: number): Promise<Event | null> {
         e.start_time,
         e.end_time,
         e.location,
-        e.source_url,
+        (SELECT es2.source_url FROM event_sources es2 WHERE es2.event_id = e.id ORDER BY es2.first_seen_at LIMIT 1) as source_url,
         e.video_url,
-        s.name as source_name
+        COALESCE(string_agg(DISTINCT s.name, ', ' ORDER BY s.name), 'Unknown') as source_names,
+        COUNT(DISTINCT es.source_id)::int as source_count
       FROM events e
-      JOIN sources s ON e.source_id = s.id
+      LEFT JOIN event_sources es ON e.id = es.event_id
+      LEFT JOIN sources s ON es.source_id = s.id
       WHERE e.id = ${id}
+      GROUP BY e.id
     `;
     return events[0] || null;
   } catch (error) {
@@ -182,10 +186,20 @@ export default async function EventDetailPage({
 
         {/* Event Header */}
         <div className="mb-8">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="text-sm font-medium px-3 py-1 rounded-full bg-primary/10 text-primary">
-              {event.source_name}
-            </span>
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            {event.source_names.split(', ').map((source, idx) => (
+              <span 
+                key={idx}
+                className="text-sm font-medium px-3 py-1 rounded-full bg-primary/10 text-primary"
+              >
+                {source}
+              </span>
+            ))}
+            {event.source_count > 1 && (
+              <span className="text-sm font-medium px-3 py-1 rounded-full bg-emerald-100 text-emerald-800" title="Verified across multiple sources">
+                ✓ Verified ({event.source_count} sources)
+              </span>
+            )}
           </div>
           <h1 className="text-3xl font-bold mb-4">{event.title}</h1>
           
