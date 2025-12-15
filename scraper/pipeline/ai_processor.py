@@ -598,6 +598,144 @@ JSON response:"""
             logger.warning(f"Failed to parse AI response for document linking: {e}")
             return []
 
+    async def generate_event_summary(
+        self,
+        event: dict,
+        sources: list[dict],
+        documents: list[dict],
+    ) -> Optional[str]:
+        """
+        Generate an AI overview/summary of an event using all available information.
+        
+        For meetings with agendas/minutes, focuses on non-routine items.
+        For community events, provides a helpful overview.
+        
+        Args:
+            event: Event dict with id, title, description, start_time, location, category
+            sources: List of source dicts with name, raw_data
+            documents: List of document dicts with title, document_type, relationship, content_text, local_path
+            
+        Returns:
+            AI-generated summary or None on failure
+        """
+        if not self.enabled:
+            logger.warning("AI not enabled - cannot generate event summary")
+            return None
+        
+        # Determine if this is a meeting (has agenda/minutes)
+        is_meeting = any(
+            d.get('relationship') in ('agenda', 'minutes', 'packet') 
+            for d in documents
+        )
+        
+        # Build context from all sources
+        source_info = []
+        for src in sources:
+            info = f"- {src.get('name', 'Unknown source')}"
+            if src.get('raw_data'):
+                # Include key raw data fields if available
+                raw = src['raw_data']
+                if isinstance(raw, dict):
+                    if raw.get('description'):
+                        info += f"\n  Description: {raw['description'][:500]}"
+            source_info.append(info)
+        
+        # Build document content
+        doc_content = []
+        for doc in documents:
+            doc_info = f"### {doc.get('title', 'Untitled')} ({doc.get('relationship', 'related')})"
+            
+            # Try to get content from content_text first
+            content = doc.get('content_text')
+            
+            # If no content_text, try to extract from PDF
+            if not content and doc.get('local_path'):
+                content = await self._extract_pdf_text(doc['local_path'], max_pages=5)
+            
+            if content:
+                # Truncate to reasonable size for AI
+                doc_info += f"\n{content[:3000]}"
+            
+            doc_content.append(doc_info)
+        
+        # Choose appropriate system prompt based on event type
+        if is_meeting:
+            system_prompt = """You are a civic information assistant helping residents understand local government meetings.
+
+Your job is to create a concise, helpful summary of a government meeting based on available documents.
+
+FOCUS ON:
+- Non-routine agenda items (skip standard approvals like minutes approval, roll call)
+- Key decisions, votes, or discussions
+- Public hearing items
+- New business or special presentations
+- Items that directly affect residents
+
+SKIP or briefly mention:
+- Routine procedural items (call to order, roll call, adjournment)
+- Standard consent agenda items unless notable
+- Minutes approval from previous meetings
+
+FORMAT:
+- Start with a one-sentence overview
+- Use bullet points for key items
+- Keep it under 200 words
+- Be factual and neutral
+- If agenda only, say "Scheduled to discuss:" 
+- If minutes available, say "Discussed:" or "Decided:" """
+        else:
+            system_prompt = """You are a civic information assistant helping residents learn about community events.
+
+Your job is to create a helpful, engaging summary of a community event.
+
+INCLUDE:
+- What the event is about
+- Who it's for (families, seniors, all ages, etc.)
+- Key details like registration requirements or things to bring
+- Why someone might want to attend
+
+FORMAT:
+- Start with an engaging one-sentence hook
+- Include practical details
+- Keep it under 150 words
+- Be warm and inviting but factual"""
+
+        # Build the prompt
+        prompt = f"""Create a summary for this event:
+
+**{event.get('title', 'Untitled Event')}**
+- Date: {event.get('start_time', 'TBD')}
+- Location: {event.get('location', 'Not specified')}
+- Category: {event.get('category', 'General')}
+
+Original Description:
+{event.get('description', 'No description available')[:500]}
+
+Sources:
+{chr(10).join(source_info) if source_info else 'No additional source information'}
+
+Documents:
+{chr(10).join(doc_content) if doc_content else 'No documents available'}
+
+Generate a concise, helpful summary:"""
+
+        response = await self._call_gemini(prompt, system_prompt)
+        
+        if response:
+            # Clean up response
+            summary = response.strip()
+            # Remove any markdown code blocks if present
+            if summary.startswith("```"):
+                summary = summary.split("```")[1]
+                if summary.startswith("markdown") or summary.startswith("text"):
+                    summary = summary.split("\n", 1)[1] if "\n" in summary else summary
+            summary = summary.strip()
+            
+            logger.info(f"Generated AI summary for event '{event.get('title')}' ({len(summary)} chars)")
+            return summary
+        
+        return None
+
     async def _extract_pdf_text(self, local_path: str, max_pages: int = 3) -> Optional[str]:
         """
         Extract text from a PDF file for AI analysis.

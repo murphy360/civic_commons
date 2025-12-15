@@ -18,6 +18,7 @@ interface Event {
   has_agenda: number;
   has_minutes: number;
   first_doc_id: number | null;
+  has_ai_summary: boolean;
 }
 
 async function getUpcomingEvents(): Promise<Event[]> {
@@ -38,7 +39,8 @@ async function getUpcomingEvents(): Promise<Event[]> {
         (SELECT COUNT(*) FROM event_documents ed WHERE ed.event_id = e.id AND ed.relationship = 'agenda')::int as has_agenda,
         (SELECT COUNT(*) FROM event_documents ed WHERE ed.event_id = e.id AND ed.relationship = 'minutes')::int as has_minutes,
         (SELECT ed.document_id FROM event_documents ed WHERE ed.event_id = e.id ORDER BY 
-          CASE ed.relationship WHEN 'agenda' THEN 1 WHEN 'minutes' THEN 2 ELSE 3 END LIMIT 1)::int as first_doc_id
+          CASE ed.relationship WHEN 'agenda' THEN 1 WHEN 'minutes' THEN 2 ELSE 3 END LIMIT 1)::int as first_doc_id,
+        (e.ai_summary IS NOT NULL) as has_ai_summary
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id
@@ -72,7 +74,8 @@ async function getPastEvents(): Promise<Event[]> {
         (SELECT COUNT(*) FROM event_documents ed WHERE ed.event_id = e.id AND ed.relationship = 'agenda')::int as has_agenda,
         (SELECT COUNT(*) FROM event_documents ed WHERE ed.event_id = e.id AND ed.relationship = 'minutes')::int as has_minutes,
         (SELECT ed.document_id FROM event_documents ed WHERE ed.event_id = e.id ORDER BY 
-          CASE ed.relationship WHEN 'agenda' THEN 1 WHEN 'minutes' THEN 2 ELSE 3 END LIMIT 1)::int as first_doc_id
+          CASE ed.relationship WHEN 'agenda' THEN 1 WHEN 'minutes' THEN 2 ELSE 3 END LIMIT 1)::int as first_doc_id,
+        (e.ai_summary IS NOT NULL) as has_ai_summary
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id
@@ -159,6 +162,11 @@ function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }
             {event.video_url && (
               <span className="text-xs font-medium px-2 py-1 rounded-full bg-red-100 text-red-800">
                 📹 Video
+              </span>
+            )}
+            {event.has_ai_summary && (
+              <span className="text-xs font-medium px-2 py-1 rounded-full bg-indigo-100 text-indigo-800" title="AI Overview Available">
+                ✨ AI Overview
               </span>
             )}
           </div>

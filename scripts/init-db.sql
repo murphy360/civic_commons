@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS events (
     is_virtual BOOLEAN DEFAULT FALSE,
     virtual_url TEXT,
     video_url TEXT,                    -- Recording URL (YouTube, Vimeo, etc.)
+    ai_summary TEXT,                   -- AI-generated overview of the event
+    ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );

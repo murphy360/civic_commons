@@ -328,9 +328,104 @@ class Worker:
                     logger.info(
                         f"AI linked document '{document.title}' to {len(matches)} events"
                     )
+                    # Generate/update AI summaries for linked events
+                    for match in matches:
+                        await self._generate_event_summary(conn, match['event_id'])
                     
             except Exception as e:
                 logger.warning(f"AI document linking failed for '{document.title}': {e}")
+
+    async def _generate_event_summary(
+        self,
+        conn,
+        event_id: int,
+    ) -> None:
+        """
+        Generate or update the AI summary for an event.
+        
+        Called after documents are linked to ensure the summary reflects
+        all available information.
+        
+        Args:
+            conn: Database connection
+            event_id: ID of the event to summarize
+        """
+        if not self.ai_processor or not self.ai_processor.enabled:
+            return
+            
+        try:
+            # Fetch event details
+            event_row = await conn.fetchrow("""
+                SELECT id, title, description, start_time, location, category
+                FROM events
+                WHERE id = $1
+            """, event_id)
+            
+            if not event_row:
+                return
+                
+            event = {
+                'id': event_row['id'],
+                'title': event_row['title'],
+                'description': event_row['description'],
+                'start_time': event_row['start_time'].isoformat() if event_row['start_time'] else None,
+                'location': event_row['location'],
+                'category': event_row['category'],
+            }
+            
+            # Fetch event sources
+            source_rows = await conn.fetch("""
+                SELECT s.name, es.raw_data
+                FROM event_sources es
+                JOIN sources s ON es.source_id = s.id
+                WHERE es.event_id = $1
+            """, event_id)
+            
+            sources = [
+                {'name': r['name'], 'raw_data': r['raw_data']}
+                for r in source_rows
+            ]
+            
+            # Fetch associated documents
+            doc_rows = await conn.fetch("""
+                SELECT d.id, d.title, d.document_type, ed.relationship, 
+                       d.content_text, d.local_path
+                FROM event_documents ed
+                JOIN documents d ON ed.document_id = d.id
+                WHERE ed.event_id = $1
+            """, event_id)
+            
+            documents = [
+                {
+                    'id': d['id'],
+                    'title': d['title'],
+                    'document_type': d['document_type'],
+                    'relationship': d['relationship'],
+                    'content_text': d['content_text'],
+                    'local_path': d['local_path'],
+                }
+                for d in doc_rows
+            ]
+            
+            # Generate the summary
+            summary = await self.ai_processor.generate_event_summary(
+                event=event,
+                sources=sources,
+                documents=documents,
+            )
+            
+            if summary:
+                # Save to database
+                await conn.execute("""
+                    UPDATE events
+                    SET ai_summary = $1, ai_summary_updated_at = NOW()
+                    WHERE id = $2
+                """, summary, event_id)
+                
+                logger.info(f"Generated AI summary for event '{event['title']}' (id={event_id})")
+                
+        except Exception as e:
+            logger.warning(f"Failed to generate AI summary for event {event_id}: {e}")
 
     async def _download_and_update_document(
         self,
@@ -389,6 +484,9 @@ class Worker:
             config=source.params,
         )
         
+        # Track events with documents for summary generation
+        events_with_docs = set()
+        
         # Store events (with optional AI enrichment)
         for event in events:
             try:
@@ -409,6 +507,7 @@ class Worker:
                             conn, source_id, document, event_id=event_id
                         )
                         logger.debug(f"Linked document '{document.title}' (id={doc_id}) to event {event_id}")
+                        events_with_docs.add(event_id)
                         
                         # Download the document
                         await self._download_and_update_document(conn, document, doc_id, source.name)
@@ -436,6 +535,12 @@ class Worker:
         # Use AI to link standalone documents to existing events
         if standalone_doc_ids and self.ai_processor and self.ai_processor.enabled:
             await self._ai_link_documents_to_events(conn, standalone_doc_ids)
+        
+        # Generate AI summaries for events that have documents
+        if events_with_docs and self.ai_processor and self.ai_processor.enabled:
+            logger.info(f"Generating AI summaries for {len(events_with_docs)} events with documents...")
+            for event_id in events_with_docs:
+                await self._generate_event_summary(conn, event_id)
         
         # Update source health status
         await self.db_pool.update_source_health(conn, source_id, success=True)

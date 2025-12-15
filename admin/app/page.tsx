@@ -1,21 +1,185 @@
+import { sql } from '@/lib/db';
 import Link from 'next/link';
 
-// Mock data for dashboard stats
-const stats = [
-  { name: 'Active Sources', value: '12', change: '+2', changeType: 'positive' },
-  { name: 'Events Indexed', value: '1,234', change: '+156', changeType: 'positive' },
-  { name: 'Documents', value: '5,678', change: '+89', changeType: 'positive' },
-  { name: 'Failed Scrapes', value: '3', change: '-2', changeType: 'negative' },
-];
+export const dynamic = 'force-dynamic';
 
-const recentActivity = [
-  { id: 1, source: 'City Council', action: 'Scraped 5 new documents', time: '2 min ago', status: 'success' },
-  { id: 2, source: 'Library', action: 'Updated 12 events', time: '15 min ago', status: 'success' },
-  { id: 3, source: 'Parks & Rec', action: 'Connection timeout', time: '1 hour ago', status: 'error' },
-  { id: 4, source: 'School Board', action: 'Scraped 3 new documents', time: '2 hours ago', status: 'success' },
-];
+interface SourceStatus {
+  id: number;
+  name: string;
+  city_id: string;
+  source_type: string;
+  is_enabled: boolean;
+  last_fetched_at: Date | null;
+  last_success_at: Date | null;
+  last_error: string | null;
+  consecutive_failures: number;
+}
 
-export default function AdminDashboard() {
+async function getStats() {
+  try {
+    // Get source statistics
+    const sourceStats = await sql<Array<{
+      total: number;
+      active: number;
+      healthy: number;
+      failing: number;
+    }>>`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE is_enabled = true)::int as active,
+        COUNT(*) FILTER (WHERE is_enabled = true AND consecutive_failures = 0)::int as healthy,
+        COUNT(*) FILTER (WHERE consecutive_failures > 0)::int as failing
+      FROM sources
+    `;
+
+    // Get event statistics
+    const eventStats = await sql<Array<{
+      total: number;
+      with_summaries: number;
+    }>>`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE ai_summary IS NOT NULL)::int as with_summaries
+      FROM events
+    `;
+
+    // Get document statistics
+    const docStats = await sql<Array<{
+      total: number;
+      downloaded: number;
+    }>>`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE local_path IS NOT NULL)::int as downloaded
+      FROM documents
+    `;
+
+    // Get backfill queue status (if table exists)
+    let backfillStatus = { pending: 0, in_progress: 0, completed: 0, failed: 0 };
+    try {
+      const backfillStats = await sql<Array<{
+        status: string;
+        count: number;
+      }>>`
+        SELECT status, COUNT(*)::int as count
+        FROM backfill_queue
+        GROUP BY status
+      `;
+      for (const row of backfillStats) {
+        if (row.status === 'pending') backfillStatus.pending = row.count;
+        else if (row.status === 'in_progress') backfillStatus.in_progress = row.count;
+        else if (row.status === 'completed') backfillStatus.completed = row.count;
+        else if (row.status === 'failed') backfillStatus.failed = row.count;
+      }
+    } catch {
+      // Table might not exist yet
+    }
+
+    return {
+      sources: {
+        total: sourceStats[0]?.total || 0,
+        active: sourceStats[0]?.active || 0,
+        healthy: sourceStats[0]?.healthy || 0,
+        failing: sourceStats[0]?.failing || 0,
+      },
+      events: {
+        total: eventStats[0]?.total || 0,
+        withSummaries: eventStats[0]?.with_summaries || 0,
+      },
+      documents: {
+        total: docStats[0]?.total || 0,
+        downloaded: docStats[0]?.downloaded || 0,
+      },
+      backfill: backfillStatus,
+    };
+  } catch (error) {
+    console.error('Failed to fetch stats:', error);
+    return {
+      sources: { total: 0, active: 0, healthy: 0, failing: 0 },
+      events: { total: 0, withSummaries: 0 },
+      documents: { total: 0, downloaded: 0 },
+      backfill: { pending: 0, in_progress: 0, completed: 0, failed: 0 },
+    };
+  }
+}
+
+async function getSources(): Promise<SourceStatus[]> {
+  try {
+    return await sql<SourceStatus[]>`
+      SELECT 
+        id, name, city_id, source_type, is_enabled,
+        last_fetched_at, last_success_at, last_error, consecutive_failures
+      FROM sources
+      ORDER BY 
+        consecutive_failures DESC,
+        last_fetched_at DESC NULLS LAST
+    `;
+  } catch (error) {
+    console.error('Failed to fetch sources:', error);
+    return [];
+  }
+}
+
+function formatTimeAgo(date: Date | null): string {
+  if (!date) return 'Never';
+  const now = new Date();
+  const then = new Date(date);
+  const diffMs = now.getTime() - then.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+}
+
+function getStatusColor(source: SourceStatus): string {
+  if (!source.is_enabled) return 'bg-gray-400';
+  if (source.consecutive_failures > 0) return 'bg-red-500';
+  if (source.last_success_at) return 'bg-green-500';
+  return 'bg-yellow-500';
+}
+
+function getStatusText(source: SourceStatus): string {
+  if (!source.is_enabled) return 'Disabled';
+  if (source.consecutive_failures > 0) return `Failed (${source.consecutive_failures}x)`;
+  if (source.last_success_at) return 'Healthy';
+  return 'Pending';
+}
+
+export default async function AdminDashboard() {
+  const stats = await getStats();
+  const sources = await getSources();
+
+  const statCards = [
+    { 
+      name: 'Active Sources', 
+      value: stats.sources.active.toString(), 
+      subtext: `${stats.sources.healthy} healthy, ${stats.sources.failing} failing`,
+      color: stats.sources.failing > 0 ? 'text-yellow-600' : 'text-green-600'
+    },
+    { 
+      name: 'Events Indexed', 
+      value: stats.events.total.toLocaleString(), 
+      subtext: `${stats.events.withSummaries} with AI summaries`,
+      color: 'text-blue-600'
+    },
+    { 
+      name: 'Documents', 
+      value: stats.documents.total.toLocaleString(), 
+      subtext: `${stats.documents.downloaded} downloaded`,
+      color: 'text-purple-600'
+    },
+    { 
+      name: 'Backfill Queue', 
+      value: stats.backfill.pending.toString(), 
+      subtext: `${stats.backfill.completed} done, ${stats.backfill.failed} failed`,
+      color: stats.backfill.in_progress > 0 ? 'text-blue-600' : 'text-gray-600'
+    },
+  ];
+
   return (
     <div className="flex min-h-screen">
       {/* Sidebar */}
@@ -79,7 +243,9 @@ export default function AdminDashboard() {
         <header className="flex h-14 items-center justify-between border-b px-6">
           <h1 className="text-lg font-semibold">Dashboard</h1>
           <div className="flex items-center gap-4">
-            <span className="text-sm text-muted-foreground">admin@example.com</span>
+            <span className="text-sm text-muted-foreground">
+              Last updated: {new Date().toLocaleTimeString()}
+            </span>
           </div>
         </header>
 
@@ -87,40 +253,136 @@ export default function AdminDashboard() {
         <div className="p-6 space-y-6">
           {/* Stats Grid */}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {stats.map((stat) => (
+            {statCards.map((stat) => (
               <div key={stat.name} className="rounded-lg border bg-card p-6">
                 <p className="text-sm font-medium text-muted-foreground">{stat.name}</p>
-                <div className="mt-2 flex items-baseline gap-2">
+                <div className="mt-2">
                   <p className="text-2xl font-bold">{stat.value}</p>
-                  <span className={`text-sm ${stat.changeType === 'positive' ? 'text-green-600' : 'text-red-600'}`}>
-                    {stat.change}
-                  </span>
+                  <p className={`text-sm ${stat.color}`}>{stat.subtext}</p>
                 </div>
               </div>
             ))}
           </div>
 
-          {/* Recent Activity */}
+          {/* Source Status Table */}
           <div className="rounded-lg border bg-card">
             <div className="flex items-center justify-between border-b p-4">
-              <h2 className="font-semibold">Recent Activity</h2>
-              <Link href="/logs" className="text-sm text-primary hover:underline">
-                View all
-              </Link>
+              <h2 className="font-semibold">Source Status</h2>
+              <span className="text-sm text-muted-foreground">
+                {sources.length} source{sources.length !== 1 ? 's' : ''}
+              </span>
             </div>
-            <div className="divide-y">
-              {recentActivity.map((activity) => (
-                <div key={activity.id} className="flex items-center justify-between p-4">
-                  <div className="flex items-center gap-4">
-                    <div className={`h-2 w-2 rounded-full ${activity.status === 'success' ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <div>
-                      <p className="font-medium">{activity.source}</p>
-                      <p className="text-sm text-muted-foreground">{activity.action}</p>
-                    </div>
-                  </div>
-                  <span className="text-sm text-muted-foreground">{activity.time}</span>
+            {sources.length === 0 ? (
+              <div className="p-8 text-center text-muted-foreground">
+                No sources configured yet. The worker will create sources on first scrape.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium">Source</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium">Last Fetched</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium">Last Success</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {sources.map((source) => (
+                      <tr key={source.id} className="hover:bg-muted/50">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className={`h-2.5 w-2.5 rounded-full ${getStatusColor(source)}`} />
+                            <span className="text-sm">{getStatusText(source)}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div>
+                            <p className="font-medium">{source.name}</p>
+                            <p className="text-sm text-muted-foreground">{source.city_id}</p>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm">{source.source_type}</td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">
+                          {formatTimeAgo(source.last_fetched_at)}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">
+                          {formatTimeAgo(source.last_success_at)}
+                        </td>
+                        <td className="px-4 py-3 text-sm">
+                          {source.last_error ? (
+                            <span className="text-red-600 truncate max-w-xs block" title={source.last_error}>
+                              {source.last_error.substring(0, 50)}...
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* AI Summary Progress */}
+          <div className="rounded-lg border bg-card p-6">
+            <h2 className="font-semibold mb-4">AI Summary Generation</h2>
+            <div className="space-y-4">
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>Events with AI Summaries</span>
+                  <span>{stats.events.withSummaries} / {stats.events.total}</span>
                 </div>
-              ))}
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-blue-500 rounded-full transition-all"
+                    style={{ 
+                      width: stats.events.total > 0 
+                        ? `${(stats.events.withSummaries / stats.events.total) * 100}%` 
+                        : '0%' 
+                    }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>Documents Downloaded</span>
+                  <span>{stats.documents.downloaded} / {stats.documents.total}</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-purple-500 rounded-full transition-all"
+                    style={{ 
+                      width: stats.documents.total > 0 
+                        ? `${(stats.documents.downloaded / stats.documents.total) * 100}%` 
+                        : '0%' 
+                    }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>Backfill Progress</span>
+                  <span>
+                    {stats.backfill.completed} / {stats.backfill.pending + stats.backfill.in_progress + stats.backfill.completed + stats.backfill.failed}
+                  </span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-green-500 rounded-full transition-all"
+                    style={{ 
+                      width: (() => {
+                        const total = stats.backfill.pending + stats.backfill.in_progress + stats.backfill.completed + stats.backfill.failed;
+                        return total > 0 ? `${(stats.backfill.completed / total) * 100}%` : '0%';
+                      })()
+                    }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>

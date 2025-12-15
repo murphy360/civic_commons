@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { sql } from '@/lib/db';
+import { AISummarySection } from './AISummarySection';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,10 +12,13 @@ interface Event {
   start_time: Date;
   end_time: Date | null;
   location: string | null;
+  category: string | null;
   source_url: string | null;
   video_url: string | null;
   source_names: string;
   source_count: number;
+  ai_summary: string | null;
+  ai_summary_updated_at: Date | null;
 }
 
 interface EventDocument {
@@ -36,8 +40,11 @@ async function getEvent(id: number): Promise<Event | null> {
         e.start_time,
         e.end_time,
         e.location,
+        e.category,
         (SELECT es2.source_url FROM event_sources es2 WHERE es2.event_id = e.id ORDER BY es2.first_seen_at LIMIT 1) as source_url,
         e.video_url,
+        e.ai_summary,
+        e.ai_summary_updated_at,
         COALESCE(string_agg(DISTINCT s.name, ', ' ORDER BY s.name), 'Unknown') as source_names,
         COUNT(DISTINCT es.source_id)::int as source_count
       FROM events e
@@ -233,6 +240,14 @@ export default async function EventDetailPage({
           {event.description && (
             <p className="mt-6 text-lg">{event.description}</p>
           )}
+
+          {/* AI Summary Section */}
+          <AISummarySection 
+            eventId={event.id}
+            summary={event.ai_summary}
+            updatedAt={event.ai_summary_updated_at}
+            hasDocuments={documents.length > 0}
+          />
 
           <div className="flex flex-wrap gap-3 mt-6">
             {event.video_url && (
