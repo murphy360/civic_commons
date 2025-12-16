@@ -77,6 +77,7 @@ class BackfillManager:
         self.items_per_batch = items_per_batch
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._ai_queue_check = None  # Set by start_background_processor
     
     async def ensure_tables_exist(self, conn) -> None:
         """Create backfill tracking tables if they don't exist."""
@@ -323,6 +324,7 @@ class BackfillManager:
         self,
         scrape_callback,
         configs: list,
+        ai_queue_check_callback=None,
     ) -> None:
         """
         Start the background backfill processor.
@@ -331,12 +333,15 @@ class BackfillManager:
             scrape_callback: Async function to call for scraping
                             Signature: (config, source, start_date, end_date) -> (events, documents)
             configs: List of city configurations
+            ai_queue_check_callback: Optional async function to check if AI queue is busy
+                                    Signature: () -> bool (True if busy)
         """
         if self._running:
             logger.warning("Backfill processor already running")
             return
         
         self._running = True
+        self._ai_queue_check = ai_queue_check_callback
         self._task = asyncio.create_task(
             self._process_queue(scrape_callback, configs)
         )
@@ -364,6 +369,12 @@ class BackfillManager:
         
         while self._running:
             try:
+                # Check if AI queue is busy - if so, wait
+                if self._ai_queue_check and await self._ai_queue_check():
+                    logger.info("Backfill: AI queue busy, waiting...")
+                    await asyncio.sleep(self.batch_delay_seconds)
+                    continue
+                
                 async with self.db_pool.acquire() as conn:
                     # Get next job
                     job = await self.get_next_pending_job(conn)

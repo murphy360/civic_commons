@@ -30,6 +30,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./scripts/migrations:/scripts/migrations:ro
     healthcheck:
       # Use POSTGRES_USER env var set inside container, not compose interpolation
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]

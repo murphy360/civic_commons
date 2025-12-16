@@ -128,6 +128,10 @@ CREATE TABLE IF NOT EXISTS documents (
     ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
     published_date TIMESTAMP,          -- When the document was published/uploaded
     meeting_date TIMESTAMP,            -- Date of the meeting this document is for (for linking)
+    -- Linking status tracking
+    linking_status VARCHAR(32),        -- NULL=new, 'pending', 'pending_retry', 'linked', 'blocked'
+    linking_attempts INTEGER DEFAULT 0, -- Number of linking attempts
+    linking_retry_after TIMESTAMP,     -- When to retry linking
     raw_data JSONB,
     search_vector TSVECTOR,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
@@ -140,6 +144,7 @@ CREATE INDEX IF NOT EXISTS documents_published_date_idx ON documents(published_d
 CREATE INDEX IF NOT EXISTS documents_meeting_date_idx ON documents(meeting_date);
 CREATE INDEX IF NOT EXISTS documents_external_id_idx ON documents(source_id, external_id);
 CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS documents_linking_status_idx ON documents(linking_status);
 
 -- =============================================================================
 -- Event-Document Association
