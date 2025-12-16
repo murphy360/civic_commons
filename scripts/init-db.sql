@@ -263,6 +263,39 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =============================================================================
+-- Newsletters (AI-generated periodic summaries)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS newsletters (
+    id SERIAL PRIMARY KEY,
+    city_id VARCHAR(64) NOT NULL,
+    title VARCHAR(512) NOT NULL,
+    period_type VARCHAR(32) NOT NULL,  -- 'daily', 'weekly', 'monthly', 'quarterly', 'annual'
+    period_start TIMESTAMP NOT NULL,   -- Start of the period covered
+    period_end TIMESTAMP NOT NULL,     -- End of the period covered
+    status VARCHAR(32) DEFAULT 'pending' NOT NULL, -- 'pending', 'generating', 'completed', 'failed'
+    summary_text TEXT,                 -- AI-generated markdown summary
+    pdf_path TEXT,                     -- Local path to generated PDF
+    pdf_url TEXT,                      -- Public URL to the PDF
+    event_count INTEGER DEFAULT 0,     -- Number of events included
+    document_count INTEGER DEFAULT 0,  -- Number of documents referenced
+    generation_started_at TIMESTAMP,
+    generation_completed_at TIMESTAMP,
+    error_message TEXT,
+    metadata JSONB,                    -- Additional data (featured events, highlights, etc.)
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS newsletters_city_id_idx ON newsletters(city_id);
+CREATE INDEX IF NOT EXISTS newsletters_period_type_idx ON newsletters(period_type);
+CREATE INDEX IF NOT EXISTS newsletters_period_start_idx ON newsletters(period_start);
+CREATE INDEX IF NOT EXISTS newsletters_status_idx ON newsletters(status);
+CREATE UNIQUE INDEX IF NOT EXISTS newsletters_unique_period_idx ON newsletters(city_id, period_type, period_start);
+
+CREATE TRIGGER update_newsletters_updated_at BEFORE UPDATE ON newsletters
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================================================================
 -- Helper Functions for Event Deduplication
 -- =============================================================================
 

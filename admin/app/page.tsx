@@ -1,6 +1,7 @@
 import { sql } from '@/lib/db';
 import Link from 'next/link';
 import SourceStatusTable from './components/SourceStatusTable';
+import NewsletterManager from './components/NewsletterManager';
 
 export const dynamic = 'force-dynamic';
 
@@ -387,6 +388,9 @@ export default async function AdminDashboard() {
               </div>
             </div>
           </div>
+
+          {/* Newsletter Management */}
+          <NewsletterManager />
         </div>
       </main>
     </div>

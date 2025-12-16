@@ -23,6 +23,7 @@ from models import Event, Document
 from pipeline.storage import DatabasePool
 from pipeline.ai_processor import AIEventProcessor
 from pipeline.ai import DocumentSummarizer, GeminiClient
+from pipeline.ai.newsletter import NewsletterGenerator, PeriodType, get_period_dates, generate_newsletter_title
 from pipeline.backfill import BackfillManager
 from pipeline.downloader import DocumentDownloader
 
@@ -60,6 +61,7 @@ class Worker:
         self.db_pool: DatabasePool | None = None
         self.ai_processor: Optional[AIEventProcessor] = None
         self.doc_summarizer: Optional[DocumentSummarizer] = None
+        self.newsletter_generator: Optional[NewsletterGenerator] = None
         self.backfill_manager: Optional[BackfillManager] = None
         self.document_downloader: Optional[DocumentDownloader] = None
         self._shutdown_event = asyncio.Event()
@@ -82,7 +84,9 @@ class Worker:
             # Create a separate document summarizer using the same client
             gemini_client = GeminiClient(api_key=gemini_key)
             self.doc_summarizer = DocumentSummarizer(gemini_client)
-            logger.info("AI event processor and document summarizer enabled")
+            # Create newsletter generator
+            self.newsletter_generator = NewsletterGenerator(gemini_client)
+            logger.info("AI event processor, document summarizer, and newsletter generator enabled")
         else:
             logger.info("AI processing disabled (no GEMINI_API_KEY)")
         
@@ -213,6 +217,153 @@ class Worker:
             replace_existing=True,
         )
         logger.info("Scheduled manual trigger checker (every 15 seconds)")
+
+        # Schedule newsletter generation jobs if AI is enabled
+        if self.newsletter_generator and self.newsletter_generator.enabled:
+            # Daily newsletter - generate at 6 AM every day
+            self.scheduler.add_job(
+                self.generate_newsletter,
+                trigger=CronTrigger(hour=6, minute=0),
+                id="newsletter_daily",
+                name="Generate Daily Newsletter",
+                kwargs={"period_type": "daily"},
+                replace_existing=True,
+            )
+            logger.info("Scheduled daily newsletter generation (6:00 AM)")
+
+            # Weekly newsletter - generate on Mondays at 7 AM
+            self.scheduler.add_job(
+                self.generate_newsletter,
+                trigger=CronTrigger(day_of_week="mon", hour=7, minute=0),
+                id="newsletter_weekly",
+                name="Generate Weekly Newsletter",
+                kwargs={"period_type": "weekly"},
+                replace_existing=True,
+            )
+            logger.info("Scheduled weekly newsletter generation (Mondays 7:00 AM)")
+
+            # Monthly newsletter - generate on the 1st at 8 AM
+            self.scheduler.add_job(
+                self.generate_newsletter,
+                trigger=CronTrigger(day=1, hour=8, minute=0),
+                id="newsletter_monthly",
+                name="Generate Monthly Newsletter",
+                kwargs={"period_type": "monthly"},
+                replace_existing=True,
+            )
+            logger.info("Scheduled monthly newsletter generation (1st of month 8:00 AM)")
+
+    async def generate_newsletter(self, period_type: str) -> None:
+        """
+        Generate a newsletter for the specified period.
+        
+        Args:
+            period_type: One of 'daily', 'weekly', 'monthly', 'quarterly', 'annual'
+        """
+        if not self.newsletter_generator or not self.newsletter_generator.enabled:
+            logger.warning("Newsletter generation disabled")
+            return
+
+        try:
+            ptype = PeriodType(period_type)
+            period_start, period_end = get_period_dates(ptype)
+            
+            logger.info(f"Generating {period_type} newsletter for {period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')}")
+            
+            async with self.db_pool.acquire() as conn:
+                # Check if newsletter already exists for this period
+                existing = await conn.fetchrow("""
+                    SELECT id FROM newsletters
+                    WHERE period_type = $1 AND period_start = $2
+                """, period_type, period_start)
+                
+                if existing:
+                    logger.info(f"Newsletter already exists for {period_type} {period_start.strftime('%Y-%m-%d')}")
+                    return
+                
+                # Get events for this period with their AI summaries
+                events = await conn.fetch("""
+                    SELECT 
+                        e.id, e.title, e.description, e.start_time, e.end_time,
+                        e.location, e.category, e.ai_summary,
+                        COALESCE(
+                            json_agg(
+                                json_build_object(
+                                    'id', d.id,
+                                    'title', d.title,
+                                    'document_type', d.document_type
+                                )
+                            ) FILTER (WHERE d.id IS NOT NULL),
+                            '[]'
+                        ) as documents
+                    FROM events e
+                    LEFT JOIN event_documents ed ON e.id = ed.event_id
+                    LEFT JOIN documents d ON ed.document_id = d.id
+                    WHERE e.start_time BETWEEN $1 AND $2
+                    GROUP BY e.id
+                    ORDER BY e.start_time ASC
+                """, period_start, period_end)
+                
+                # Get city name from first config
+                city_name = "Community"
+                if self._configs:
+                    city_name = self._configs[0].city_profile.name
+                
+                # Convert to list of dicts
+                events_list = [dict(e) for e in events]
+                
+                # Generate newsletter title
+                title = generate_newsletter_title(ptype, period_start, city_name)
+                
+                # Create newsletter record first (pending)
+                newsletter_id = await conn.fetchval("""
+                    INSERT INTO newsletters (
+                        city_id, title, period_type, period_start, period_end,
+                        status, event_count, generation_started_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'generating', $6, NOW())
+                    RETURNING id
+                """, city_name.lower().replace(' ', '_').replace(',', ''), title, 
+                    period_type, period_start, period_end, len(events_list))
+                
+                try:
+                    # Generate newsletter content
+                    summary_text = await self.newsletter_generator.generate_newsletter(
+                        period_type=ptype,
+                        period_start=period_start,
+                        period_end=period_end,
+                        events=events_list,
+                        city_name=city_name,
+                    )
+                    
+                    # Count documents
+                    doc_count = sum(len(e.get("documents", [])) for e in events_list)
+                    
+                    # Update newsletter record
+                    await conn.execute("""
+                        UPDATE newsletters SET
+                            status = 'completed',
+                            summary_text = $1,
+                            event_count = $2,
+                            document_count = $3,
+                            generation_completed_at = NOW()
+                        WHERE id = $4
+                    """, summary_text, len(events_list), doc_count, newsletter_id)
+                    
+                    logger.info(f"Generated {period_type} newsletter: {title} ({len(events_list)} events)")
+                    
+                except Exception as e:
+                    # Mark as failed
+                    await conn.execute("""
+                        UPDATE newsletters SET
+                            status = 'failed',
+                            error_message = $1,
+                            generation_completed_at = NOW()
+                        WHERE id = $2
+                    """, str(e), newsletter_id)
+                    raise
+                
+        except Exception as e:
+            logger.error(f"Error generating {period_type} newsletter: {e}")
 
     async def process_manual_triggers(self) -> None:
         """

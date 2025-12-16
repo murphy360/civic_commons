@@ -229,6 +229,223 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
+  # PROVIDES: Charter Review Commission meeting agendas, minutes
+  # DATA: City charter amendments, governance changes
+  # MEETINGS: Meets periodically (every ~5 years for charter review)
+  - name: "Charter Review Commission"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Charter Review Commission"
+      max_years: 5
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Charter Review Oversight Committee meeting agendas
+  # DATA: Oversight of charter review process
+  - name: "Charter Review Oversight Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Charter Review Oversight Committee"
+      max_years: 10
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Community Forum meeting agendas
+  # DATA: Public forums on community issues
+  - name: "Community Forum"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Community Forum"
+      max_years: 10
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Compensation Committee meeting agendas
+  # DATA: Employee compensation, salary reviews
+  - name: "Compensation Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Compensation Committee"
+      max_years: 10
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Comprehensive Plan Update Committee meeting agendas
+  # DATA: Long-term city planning, master plan updates
+  - name: "Comprehensive Plan Update Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Comprehensive Plan Update Committee"
+      max_years: 5
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Districting Commission meeting agendas
+  # DATA: Ward boundaries, redistricting after census
+  - name: "Districting Commission"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Districting Commission"
+      max_years: 10
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Glen Eagles Golf Advisory Board meeting agendas, minutes
+  # DATA: Golf course operations, improvements, advisory recommendations
+  - name: "Glen Eagles Golf Advisory Board"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Glen Eagles Golf Advisory Board"
+      max_years: 5
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: JEDI Committee meeting agendas, minutes
+  # DATA: Justice, Equity, Diversity & Inclusion initiatives
+  - name: "JEDI Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Justice, Equity, Diversity & Inclusion Committee (JEDI)"
+      max_years: 3
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Public Hearing notices and agendas
+  # DATA: Public hearings for zoning, ordinances, special topics
+  - name: "Public Hearing"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Public Hearing"
+      max_years: 3
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Records Retention meeting agendas
+  # DATA: City records management, retention schedules
+  - name: "Records Retention"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Records Retention"
+      max_years: 10
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Treasury Investment Board meeting agendas
+  # DATA: City investment policies, treasury management
+  - name: "Treasury Investment Board"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Treasury Investment Board"
+      max_years: 5
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Ward Meeting agendas
+  # DATA: Ward-specific community meetings
+  - name: "Ward Meeting"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
+        - "Ward Meeting"
+      max_years: 10
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
   # PROVIDES: Parks & Rec events (sports registrations, programs, activities)
   # DATA: Event titles, dates, descriptions from calendar HTML
   # SCRAPES: Calendar HTML pages (different from AgendaCenter)
@@ -305,15 +522,33 @@ sources:
   # ===========================================================================
 
   # PROVIDES: School board meetings, agendas, minutes
-  # DATA: K-12 school district governance meetings
-  # STATUS: Disabled - school website is slow and causes timeouts
-  # UNIQUE: Only source for school district data (not on city calendar)
-  - name: "School Board"
+  # DATA: K-12 school district governance meetings, regular and special meetings
+  # UNIQUE: Only source for school board agendas and minutes
+  # EXAMPLES: Regular meetings, special meetings, finance committee, curriculum meetings
+  - name: "TCSD Board of Education"
     driver: "aspnet_generic"
-    enabled: false  # Temporarily disabled - site too slow, causes timeouts
-    schedule: "0 */4 * * *"
+    enabled: true
+    schedule: "0 8 * * *"
     params:
-      url: "https://www.twinsburg.k12.oh.us/meetingsandagendas.aspx"
+      url: "https://www.twinsburg.k12.oh.us/agendasandminutes.aspx"
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 3
+      max_concurrent: 1
+
+  # PROVIDES: School board meeting recordings from YouTube
+  # DATA: Full video recordings of BOE meetings, livestreams
+  # UNIQUE: Direct access to school board meeting videos with AI summarization
+  # NOTES: Videos are analyzed by Gemini for discussions, votes, public comments
+  - name: "TCSD YouTube Channel"
+    driver: "youtube_channel"
+    enabled: true
+    schedule: "0 9 * * *"
+    params:
+      channel_url: "https://www.youtube.com/@twinsburgcityschooldistric821/streams"
+      max_videos: 100
     rate_limit:
       delay_seconds: 3
       max_concurrent: 1
@@ -357,6 +592,115 @@ sources:
       max_videos: 100
     rate_limit:
       delay_seconds: 3
+      max_concurrent: 1
+
+  # PROVIDES: Rotary Club meetings, service projects, community events
+  # DATA: Event titles, dates, times, locations from ClubRunner calendar
+  # UNIQUE: Only source for Rotary Club events
+  # EXAMPLES: Weekly meetings, fundraisers, community service, speakers
+  - name: "Twinsburg Rotary Club"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://portal.clubrunner.ca/4878/calendar-feed"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # ===========================================================================
+  # Twinsburg City Schools (iCalendar feeds)
+  # ===========================================================================
+
+  # PROVIDES: District-wide school events, closures, holidays
+  # DATA: Event titles, dates, times from district calendar
+  # EXAMPLES: School closures, board meetings, district-wide events
+  - name: "Twinsburg City School District"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/Twinsburg_City_School_District_export.ics"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: High school events, activities, performances
+  # DATA: Event titles, dates, times from THS calendar
+  # EXAMPLES: Concerts, plays, parent nights, graduation
+  - name: "Twinsburg High School"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/Twinsburg_High_School_export.ics"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Middle school events, activities
+  # DATA: Event titles, dates, times from Chamberlin calendar
+  # EXAMPLES: Concerts, parent teacher conferences, school events
+  - name: "R. B. Chamberlin Middle School"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/R_B_Chamberlin_Middle_School_export.ics"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Intermediate school events (grades 5-6)
+  # DATA: Event titles, dates, times from Dodge calendar
+  # EXAMPLES: Concerts, field trips, parent events
+  - name: "George G. Dodge Intermediate School"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/George_G_Dodge_Intermediate_School_export.ics"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Elementary school events (grades 2-4)
+  # DATA: Event titles, dates, times from Bissell calendar
+  # EXAMPLES: Concerts, parent teacher conferences, school events
+  - name: "Samuel Bissell Elementary School"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/Samuel_Bissell_Elementary_School_export.ics"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Primary school events (grades K-1)
+  # DATA: Event titles, dates, times from Wilcox calendar
+  # EXAMPLES: Kindergarten events, parent activities
+  - name: "Wilcox Primary School"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/Wilcox_Primary_School_export.ics"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Athletic events across all Twinsburg schools
+  # DATA: Games, matches, tournaments, athletic events
+  # EXAMPLES: Football, basketball, soccer, track meets
+  - name: "Twinsburg Athletics"
+    driver: "icalendar"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://www.twinsburg.k12.oh.us/ical/Twinsburg_Athletics_export.ics"
+    rate_limit:
+      delay_seconds: 2
       max_concurrent: 1
 
   # ===========================================================================

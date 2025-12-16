@@ -29,6 +29,16 @@ DO NOT write marketing fluff. DO NOT repeat date/time/location. DO NOT invite pa
 
 YOUR JOB: Extract ACTUAL CONTENT that matters to residents.
 
+**LEAD WITH PUBLIC CONCERN** (MOST IMPORTANT):
+Start EVERY summary with a one-line indicator of public engagement level:
+
+🔴 **Heated:** "Residents voiced strong concerns about [topic]. [X] speakers addressed council."
+🟡 **Mixed:** "Some public comment on [topic]; council discussion was [brief/extended]."
+🟢 **Routine:** "No public comments. Standard agenda items processed."
+
+If video analysis shows public comments, debates, or contentious votes - LEAD WITH THAT.
+This tells busy residents whether they should read further.
+
 FOR EACH ORDINANCE/RESOLUTION YOU MENTION:
 - Include the number (e.g., "Ord. 115-2025")
 - ALWAYS explain what it does in plain language (REQUIRED - never list numbers without descriptions)
@@ -36,25 +46,34 @@ FOR EACH ORDINANCE/RESOLUTION YOU MENTION:
 - Vote result if available ("Passed 5-2", "Tabled", etc.)
 
 BAD: "Ordinances 115-2025 through 118-2025 discussed" (no descriptions!)
-GOOD: "Ord. 115-2025 (2026 budget appropriations), Ord. 116-2025 (new cybersecurity policy), Ord. 117-2025 (employee wage increase), Ord. 118-2025 (council rules: clothing allowance & lifetime fitness memberships for outgoing officials)"
+GOOD: "Ord. 115-2025 (2026 budget appropriations), Ord. 116-2025 (new cybersecurity policy)"
 
 OTHER PRIORITY ITEMS:
 - Money/contracts over $10K with dollar amounts
 - Zoning changes with addresses
-- Items tabled or referred to committee
-- Deadlines residents need to know
+- Items tabled or referred to committee (often signals controversy)
+- Split votes (not unanimous) - these indicate disagreement
 
-IF AMENDMENTS EXIST:
-When original and amended versions of a document are provided, specifically note what was ADDED or CHANGED. Don't say "check the website" - we have both versions, so describe the differences.
+FROM VIDEO RECORDINGS (if included):
+- Public comments: who spoke and what concerns they raised
+- Debates: what topics had disagreement or discussion
+- Vote results mentioned in the video
+- Tone/sentiment: was anything contentious?
+
+IF AMENDMENTS EXIST (between agenda versions):
+When original and amended versions of an agenda/minutes are provided, specifically note what was ADDED or CHANGED.
+
+NOTE: Video titles changing does NOT mean the agenda was amended. Videos are just recordings of the meeting.
 
 FORMAT:
-- Lead with most significant items
-- Bullet list of ordinances/resolutions with descriptions
-- 100-200 words
-- Skip routine procedural items (roll call, minutes approval)
+1. **First line**: Public concern indicator (🔴/🟡/🟢 with brief explanation)
+2. **Second**: Key topic(s) that drew attention (if any)
+3. **Then**: Bullet list of ordinances/resolutions with descriptions
+4. 100-250 words total
+5. Skip routine procedural items (roll call, minutes approval)
 
-If only procedural items, say:
-"Routine meeting - approved previous minutes, no major ordinances or votes."
+If only procedural items and no public comment:
+"🟢 **Routine:** No public comments. Approved previous minutes, no major ordinances or controversial votes."
 
 NO fluff. NO engagement language."""
 
@@ -186,19 +205,27 @@ class EventSummarizer:
         Also identifies document versions (original vs amended) and prepares
         a comparison note if multiple versions exist.
         
+        Video documents are given special treatment - their AI summaries often
+        contain rich analysis (public comments, debates, sentiment) that should
+        be surfaced in the event summary.
+        
         Returns:
             Tuple of (doc_content list, amendments_note string)
         """
         doc_content = []
+        video_content = []  # Separate list for videos to prioritize their analysis
         
         # Group documents by type and base title to identify versions
         doc_groups = self._group_document_versions(documents)
         amendments_note = self._build_amendments_note(doc_groups, documents)
         
         for doc in documents:
+            rel = doc.get('relationship', 'related')
+            is_video = rel == 'video'
+            
             doc_info = (
                 f"### {doc.get('title', 'Untitled')} "
-                f"({doc.get('relationship', 'related')})"
+                f"({rel})"
             )
             
             # Priority 1: Use pre-generated AI summary (most efficient)
@@ -208,19 +235,35 @@ class EventSummarizer:
             if not content:
                 content = doc.get('content_text')
             
-            # Priority 3: Extract from PDF as last resort
-            if not content and doc.get('local_path'):
+            # Priority 3: Extract from PDF as last resort (not for videos)
+            if not content and doc.get('local_path') and not is_video:
                 logger.debug(f"No AI summary for '{doc.get('title')}', extracting PDF")
                 content = await extract_pdf_text(doc['local_path'], max_pages=5)
             
             if content:
-                # Truncate - AI summaries are already concise, raw content needs more truncation
-                max_chars = 500 if doc.get('ai_summary') else 3000
+                # Videos get more space since their AI summaries contain rich analysis
+                # (public comments, debates, sentiment, etc.)
+                if is_video:
+                    max_chars = 2000  # Video summaries are valuable - include more
+                    doc_info = f"### VIDEO RECORDING: {doc.get('title', 'Untitled')}\n"
+                    doc_info += "(Contains meeting recording analysis - public comments, debates, votes)\n"
+                elif doc.get('ai_summary'):
+                    max_chars = 500  # AI summaries are already concise
+                else:
+                    max_chars = 3000  # Raw content needs more space
+                    
                 doc_info += f"\n{content[:max_chars]}"
             
-            doc_content.append(doc_info)
+            # Sort videos to front for priority
+            if is_video:
+                video_content.append(doc_info)
+            else:
+                doc_content.append(doc_info)
         
-        return doc_content, amendments_note
+        # Put video content first so the AI sees the rich analysis prominently
+        all_content = video_content + doc_content
+        
+        return all_content, amendments_note
     
     def _group_document_versions(self, documents: list[dict]) -> dict:
         """
@@ -229,13 +272,21 @@ class EventSummarizer:
         Documents with the same relationship type (agenda, minutes) for the same
         event may represent different versions if there are multiple.
         
+        NOTE: Excludes 'video' relationship type - multiple videos are not amendments,
+        they are separate recordings (e.g., Caucus Meeting vs Regular Meeting).
+        
         Returns:
             Dict mapping relationship type to list of documents of that type
         """
+        # Relationship types that CAN have amendments (original vs amended versions)
+        AMENDABLE_TYPES = {'agenda', 'minutes', 'packet'}
+        
         groups = defaultdict(list)
         for doc in documents:
             rel = doc.get('relationship', 'related')
-            groups[rel].append(doc)
+            # Only group amendable types - videos are not amendments
+            if rel in AMENDABLE_TYPES:
+                groups[rel].append(doc)
         return dict(groups)
     
     def _build_amendments_note(self, doc_groups: dict, documents: list[dict]) -> str:
