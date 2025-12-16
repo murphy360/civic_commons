@@ -446,6 +446,52 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
+  # ---------------------------------------------------------------------------
+  # CivicPlus Document Center sources (legislation documents)
+  # ---------------------------------------------------------------------------
+  # These scrape mytwinsburg.com DocumentCenter for ordinances and resolutions.
+  # Documents are PDFs with ordinance numbers (e.g., "07-25", "101-25").
+  # ---------------------------------------------------------------------------
+
+  # PROVIDES: 2025 City Council legislation (ordinances, resolutions)
+  # DATA: PDF documents of passed/pending legislation
+  # FOLDER: Document Center > City Council > 2025 Legislation (folder ID 433)
+  # EXAMPLES: Rezoning ordinances, TIF agreements, budget amendments
+  - name: "2025 Legislation"
+    driver: "civicplus_document_center"
+    enabled: true
+    schedule: "0 8 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      folder_id: 433
+      folder_name: "2025 Legislation"
+      document_type: "legislation"
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: 2024 City Council legislation (ordinances, resolutions)
+  # DATA: PDF documents of 2024 passed legislation
+  # FOLDER: Document Center > City Council > 2024 Legislation (folder ID 375)
+  - name: "2024 Legislation"
+    driver: "civicplus_document_center"
+    enabled: true
+    schedule: "0 8 * * 0"  # Weekly on Sunday (historical data)
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      folder_id: 375
+      folder_name: "2024 Legislation"
+      document_type: "legislation"
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
   # PROVIDES: Parks & Rec events (sports registrations, programs, activities)
   # DATA: Event titles, dates, descriptions from calendar HTML
   # SCRAPES: Calendar HTML pages (different from AgendaCenter)

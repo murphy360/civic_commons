@@ -11,6 +11,7 @@ from .base import BaseDriver
 from .civic_plus import CivicPlusDriver
 from .civic_plus_calendar import CivicPlusCalendarDriver
 from .civic_plus_rss import CivicPlusRssDriver
+from .civicplus_document_center import CivicPlusDocumentCenterDriver
 from .aspnet_generic import AspNetGenericDriver
 from .rss import RssDriver
 from .libcal import LibCalDriver
@@ -22,6 +23,7 @@ DRIVER_REGISTRY: dict[str, Type[BaseDriver]] = {
     "civic_plus": CivicPlusDriver,
     "civic_plus_calendar": CivicPlusCalendarDriver,
     "civic_plus_rss": CivicPlusRssDriver,
+    "civicplus_document_center": CivicPlusDocumentCenterDriver,
     "aspnet_generic": AspNetGenericDriver,
     "rss": RssDriver,
     "libcal": LibCalDriver,
