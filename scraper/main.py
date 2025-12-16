@@ -239,11 +239,15 @@ class Worker:
     async def _process_document_summaries(self, conn, batch_size: int) -> None:
         """Generate AI summaries for documents that don't have them."""
         docs = await conn.fetch("""
-            SELECT id, title, document_type, content_markdown, local_path
+            SELECT id, title, document_type, content_markdown, local_path, source_url
             FROM documents
-            WHERE ai_summary IS NULL
+            WHERE ai_summary IS NULL OR ai_summary = ''
             ORDER BY 
-                CASE WHEN local_path IS NOT NULL THEN 0 ELSE 1 END,
+                CASE 
+                    WHEN local_path IS NOT NULL THEN 0 
+                    WHEN document_type = 'video' AND source_url LIKE '%youtu%' THEN 1
+                    ELSE 2 
+                END,
                 created_at DESC
             LIMIT $1
         """, batch_size)
@@ -256,11 +260,19 @@ class Worker:
         
         for doc in docs:
             try:
+                # Determine if this is a YouTube video
+                video_url = None
+                if doc["document_type"] == "video" and doc["source_url"]:
+                    url = doc["source_url"]
+                    if "youtu.be" in url or "youtube.com" in url:
+                        video_url = url
+                
                 summary = await self.doc_summarizer.generate_summary(
                     title=doc["title"],
                     document_type=doc["document_type"],
                     content_text=doc["content_markdown"],
                     local_path=doc["local_path"],
+                    video_url=video_url,
                 )
                 
                 if summary:
@@ -287,14 +299,20 @@ class Worker:
             return
         
         # Find documents that haven't been processed for linking yet
-        # Documents need summaries before they can be linked
+        # Include documents with summaries OR videos/docs that can't be summarized
         docs = await conn.fetch("""
             SELECT d.id, d.title, d.document_type, d.ai_summary, d.meeting_date, d.source_id
             FROM documents d
             LEFT JOIN event_documents ed ON d.id = ed.document_id
             WHERE ed.document_id IS NULL
-              AND d.ai_summary IS NOT NULL
-              AND d.ai_summary != ''
+              AND (
+                -- Has a valid summary
+                (d.ai_summary IS NOT NULL AND d.ai_summary != '')
+                -- OR is a video (can't be summarized but should still be linked)
+                OR d.document_type = 'video'
+                -- OR has been around >10 min without getting a summary (likely can't be summarized)
+                OR (d.created_at < NOW() - INTERVAL '10 minutes' AND d.local_path IS NULL)
+              )
             ORDER BY d.meeting_date DESC NULLS LAST, d.created_at DESC
             LIMIT $1
         """, batch_size)
@@ -891,7 +909,7 @@ class Worker:
         # Run AI analysis queue immediately after initial scrape
         if self.doc_summarizer and self.doc_summarizer.enabled:
             logger.info("Running initial AI analysis queue processing...")
-            await self.process_ai_analysis_queue(batch_size=50)  # Larger batch for initial run
+            await self.process_ai_analysis_queue()  # Uses batch_size from settings
 
         # Wait for shutdown signal
         await self._shutdown_event.wait()

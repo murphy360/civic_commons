@@ -119,6 +119,84 @@ class GeminiClient:
             logger.error(f"Gemini API error: {e}")
             return None
     
+    async def generate_with_video(
+        self,
+        prompt: str,
+        video_url: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+    ) -> Optional[str]:
+        """
+        Call Gemini API with a YouTube video URL for analysis.
+        
+        Gemini 2.0 Flash can analyze YouTube videos directly via URL.
+        
+        Args:
+            prompt: The user prompt to send
+            video_url: YouTube video URL to analyze
+            system_prompt: Optional system instructions
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens in response
+        
+        Returns:
+            Generated text response or None on error
+        """
+        if not self.api_key:
+            return None
+        
+        client = await self._get_client()
+        
+        # Build the request contents with video
+        contents = []
+        if system_prompt:
+            contents.append({
+                "role": "user",
+                "parts": [{"text": system_prompt}]
+            })
+            contents.append({
+                "role": "model", 
+                "parts": [{"text": "I understand. I'll follow these instructions."}]
+            })
+        
+        # Include video URL and prompt together
+        contents.append({
+            "role": "user",
+            "parts": [
+                {
+                    "fileData": {
+                        "mimeType": "video/youtube",
+                        "fileUri": video_url
+                    }
+                },
+                {"text": prompt}
+            ]
+        })
+        
+        try:
+            response = await client.post(
+                f"{self.GEMINI_API_URL}?key={self.api_key}",
+                json={
+                    "contents": contents,
+                    "generationConfig": {
+                        "temperature": temperature,
+                        "maxOutputTokens": max_tokens,
+                    }
+                },
+                timeout=120.0  # Videos may take longer to process
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+            
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API HTTP error (video): {e.response.status_code} - {e.response.text}")
+            return None
+        except Exception as e:
+            logger.error(f"Gemini API error (video): {e}")
+            return None
+
     async def generate_json(
         self,
         prompt: str,

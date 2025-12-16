@@ -71,10 +71,17 @@ async function getStats() {
       events_pending: number;
     }>>`
       SELECT
-        (SELECT COUNT(*)::int FROM documents WHERE ai_summary IS NULL) as docs_pending,
+        (SELECT COUNT(*)::int FROM documents 
+         WHERE (ai_summary IS NULL OR ai_summary = '') 
+           AND (local_path IS NOT NULL OR (document_type = 'video' AND source_url LIKE '%youtu%'))
+        ) as docs_pending,
         (SELECT COUNT(*)::int FROM documents d 
-         WHERE d.ai_summary IS NOT NULL AND d.ai_summary != ''
-         AND NOT EXISTS (SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id)
+         WHERE NOT EXISTS (SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id)
+           AND (
+             (d.ai_summary IS NOT NULL AND d.ai_summary != '')
+             OR d.document_type = 'video'
+             OR (d.created_at < NOW() - INTERVAL '10 minutes' AND d.local_path IS NULL)
+           )
         ) as docs_linking_pending,
         (SELECT COUNT(*)::int FROM events WHERE ai_summary IS NULL) as events_pending
     `;

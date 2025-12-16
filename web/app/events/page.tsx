@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
+import PastEventsSection from './PastEventsSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +20,11 @@ interface Event {
   has_minutes: number;
   first_doc_id: number | null;
   has_ai_summary: boolean;
+}
+
+interface PastEventsData {
+  events: Event[];
+  total: number;
 }
 
 async function getUpcomingEvents(): Promise<Event[]> {
@@ -56,8 +62,17 @@ async function getUpcomingEvents(): Promise<Event[]> {
   }
 }
 
-async function getPastEvents(): Promise<Event[]> {
+async function getPastEvents(): Promise<PastEventsData> {
   try {
+    // Get total count
+    const countResult = await sql<{ count: number }[]>`
+      SELECT COUNT(*)::int as count 
+      FROM events 
+      WHERE start_time < NOW() - INTERVAL '1 day'
+    `;
+    const total = countResult[0]?.count || 0;
+
+    // Get initial batch of events
     const events = await sql<Event[]>`
       SELECT 
         e.id,
@@ -84,10 +99,10 @@ async function getPastEvents(): Promise<Event[]> {
       ORDER BY e.start_time DESC
       LIMIT 50
     `;
-    return events;
+    return { events, total };
   } catch (error) {
     console.error('Failed to fetch past events:', error);
-    return [];
+    return { events: [], total: 0 };
   }
 }
 
@@ -226,10 +241,21 @@ function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }
 }
 
 export default async function EventsPage() {
-  const [upcomingEvents, pastEvents] = await Promise.all([
+  const [upcomingEvents, pastEventsData] = await Promise.all([
     getUpcomingEvents(),
     getPastEvents(),
   ]);
+
+  // Serialize dates for the client component (handle both Date objects and strings)
+  const serializedPastEvents = pastEventsData.events.map(event => ({
+    ...event,
+    start_time: typeof event.start_time === 'string' 
+      ? event.start_time 
+      : event.start_time.toISOString(),
+    end_time: event.end_time 
+      ? (typeof event.end_time === 'string' ? event.end_time : event.end_time.toISOString())
+      : null,
+  }));
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -288,21 +314,11 @@ export default async function EventsPage() {
           )}
         </section>
 
-        {/* Past Events Section */}
-        {pastEvents.length > 0 && (
-          <section>
-            <h2 className="text-2xl font-bold mb-6 text-muted-foreground">
-              Past Events
-              <span className="text-sm font-normal ml-2">({pastEvents.length})</span>
-            </h2>
-            
-            <div className="grid gap-4">
-              {pastEvents.map((event) => (
-                <EventCard key={event.id} event={event} isPast={true} />
-              ))}
-            </div>
-          </section>
-        )}
+        {/* Past Events Section - Client Component with month grouping */}
+        <PastEventsSection 
+          initialEvents={serializedPastEvents}
+          totalCount={pastEventsData.total}
+        />
       </main>
     </div>
   );

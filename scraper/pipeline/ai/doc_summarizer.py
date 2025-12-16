@@ -64,6 +64,57 @@ EXTRACT:
 NO fluff. Get to the point. Under 150 words."""
 
 
+# System prompt for meeting video recordings
+VIDEO_MEETING_SYSTEM_PROMPT = """You are analyzing a government meeting video to capture what ISN'T in official minutes.
+
+Official minutes record votes and motions. Your job is to capture the HUMAN DYNAMICS:
+
+1. PUBLIC COMMENTS & CONCERNS
+   - What issues did residents raise?
+   - What emotions were expressed (frustration, support, fear, hope)?
+   - Were there recurring themes across multiple speakers?
+   - Note approximate timestamps for significant comments (e.g., "~15:30")
+
+2. COUNCIL/BOARD MEMBER DYNAMICS
+   - Who asked tough questions? About what?
+   - Were there disagreements between members? On what topics?
+   - Did anyone express reservations before voting yes?
+   - Who championed or opposed specific items?
+
+3. HEATED OR NOTABLE MOMENTS
+   - Any debates that got tense? What sparked them?
+   - Moments of humor or levity?
+   - Surprising statements or admissions?
+   - Times when officials seemed caught off guard?
+
+4. BETWEEN-THE-LINES INSIGHTS
+   - What concerns seemed to influence decisions even if not explicitly stated?
+   - Items that got rushed through vs. extensively discussed?
+   - Body language moments (sighs, frustration, enthusiasm)?
+
+5. TIMESTAMPS FOR KEY MOMENTS
+   - Note approximate video timestamps for moments viewers might want to see
+   - Format: "~1:23:45 - Council debate on zoning variance gets heated"
+
+FORMAT:
+**Meeting Tone:** [One sentence overall characterization]
+
+**Key Concerns Raised:**
+• [Concern] (~timestamp)
+
+**Notable Exchanges:**
+• [Who vs who, about what] (~timestamp)
+
+**Worth Watching:**
+• [Timestamp] - [Brief description of why]
+
+200-400 words. Focus on what you can ONLY learn from watching, not reading minutes.
+If it's a routine meeting with no drama, say so: "Procedural meeting with minimal discussion."
+
+NO vote tallies (that's in minutes). NO ordinance descriptions (that's in agendas). 
+Capture the FEEL of the room."""
+
+
 class DocumentSummarizer:
     """
     AI-powered document summary generation.
@@ -92,6 +143,7 @@ class DocumentSummarizer:
         document_type: Optional[str] = None,
         content_text: Optional[str] = None,
         local_path: Optional[str] = None,
+        video_url: Optional[str] = None,
         max_content_chars: int = 5000,
     ) -> Optional[str]:
         """
@@ -99,9 +151,10 @@ class DocumentSummarizer:
         
         Args:
             title: Document title
-            document_type: Type hint (agenda, minutes, flyer, etc.)
+            document_type: Type hint (agenda, minutes, flyer, video, etc.)
             content_text: Pre-extracted text content
             local_path: Path to local file for PDF extraction if no content
+            video_url: YouTube URL for video documents
             max_content_chars: Maximum characters to send to AI
             
         Returns:
@@ -111,7 +164,11 @@ class DocumentSummarizer:
             logger.debug("AI not enabled - skipping document summary")
             return None
         
-        # Get content
+        # Handle YouTube videos specially
+        if document_type == 'video' and video_url:
+            return await self._summarize_video(title, video_url)
+        
+        # Get content for text-based documents
         content = content_text
         if not content and local_path:
             content = await extract_pdf_text(local_path, max_pages=10)
@@ -143,6 +200,49 @@ class DocumentSummarizer:
             )
             return summary
         
+        return None
+    
+    async def _summarize_video(self, title: str, video_url: str) -> Optional[str]:
+        """
+        Generate AI summary of a YouTube video using Gemini's video analysis.
+        
+        Args:
+            title: Video title
+            video_url: YouTube URL
+            
+        Returns:
+            AI-generated summary or None on failure
+        """
+        logger.info(f"Summarizing video: {title} ({video_url})")
+        
+        prompt = f"""Analyze this government meeting video recording.
+
+Video Title: {title}
+
+I need you to capture what WON'T be in the official minutes:
+- The mood and tone of the meeting
+- Concerns and emotions expressed by residents during public comment
+- Debates or tensions between council/board members
+- Questions that revealed uncertainty or pushback
+- Moments worth watching with approximate timestamps
+
+Help viewers decide if they should watch specific sections of this meeting."""
+        
+        response = await self._client.generate_with_video(
+            prompt=prompt,
+            video_url=video_url,
+            system_prompt=VIDEO_MEETING_SYSTEM_PROMPT,
+        )
+        
+        if response:
+            summary = self._clean_response(response)
+            logger.info(
+                f"Generated AI video summary for '{title}' "
+                f"({len(summary)} chars)"
+            )
+            return summary
+        
+        logger.warning(f"Failed to generate video summary for '{title}'")
         return None
     
     def _is_meeting_document(
