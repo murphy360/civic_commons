@@ -47,10 +47,14 @@ async function getStats() {
     const docStats = await sql<Array<{
       total: number;
       downloaded: number;
+      unlinked: number;
     }>>`
       SELECT 
         COUNT(*)::int as total,
-        COUNT(*) FILTER (WHERE local_path IS NOT NULL)::int as downloaded
+        COUNT(*) FILTER (WHERE local_path IS NOT NULL)::int as downloaded,
+        COUNT(*) FILTER (WHERE NOT EXISTS (
+          SELECT 1 FROM event_documents ed WHERE ed.document_id = documents.id
+        ))::int as unlinked
       FROM documents
     `;
 
@@ -89,6 +93,7 @@ async function getStats() {
       documents: {
         total: docStats[0]?.total || 0,
         downloaded: docStats[0]?.downloaded || 0,
+        unlinked: docStats[0]?.unlinked || 0,
       },
       backfill: backfillStatus,
     };
@@ -97,7 +102,7 @@ async function getStats() {
     return {
       sources: { total: 0, active: 0, healthy: 0, failing: 0 },
       events: { total: 0, withSummaries: 0 },
-      documents: { total: 0, downloaded: 0 },
+      documents: { total: 0, downloaded: 0, unlinked: 0 },
       backfill: { pending: 0, in_progress: 0, completed: 0, failed: 0 },
     };
   }
@@ -169,7 +174,7 @@ export default async function AdminDashboard() {
     { 
       name: 'Documents', 
       value: stats.documents.total.toLocaleString(), 
-      subtext: `${stats.documents.downloaded} downloaded`,
+      subtext: `${stats.documents.downloaded} downloaded, ${stats.documents.unlinked} unlinked`,
       color: 'text-purple-600'
     },
     { 

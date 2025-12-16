@@ -112,7 +112,10 @@ CREATE TABLE IF NOT EXISTS documents (
     local_path TEXT,                   -- Local file path for downloaded files
     file_size_bytes BIGINT,            -- File size in bytes
     mime_type VARCHAR(128),            -- MIME type of the file
-    published_date TIMESTAMP,
+    ai_summary TEXT,                   -- AI-generated summary of the document
+    ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
+    published_date TIMESTAMP,          -- When the document was published/uploaded
+    meeting_date TIMESTAMP,            -- Date of the meeting this document is for (for linking)
     raw_data JSONB,
     search_vector TSVECTOR,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
@@ -122,6 +125,7 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS documents_source_id_idx ON documents(source_id);
 CREATE INDEX IF NOT EXISTS documents_document_type_idx ON documents(document_type);
 CREATE INDEX IF NOT EXISTS documents_published_date_idx ON documents(published_date);
+CREATE INDEX IF NOT EXISTS documents_meeting_date_idx ON documents(meeting_date);
 CREATE INDEX IF NOT EXISTS documents_external_id_idx ON documents(source_id, external_id);
 CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_vector);
 

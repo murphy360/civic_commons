@@ -13,26 +13,80 @@ interface Document {
   file_size_bytes: number | null;
   published_date: Date | null;
   source_name: string;
+  ai_summary: string | null;
+  event_count: number;
 }
 
-async function getDocuments(): Promise<Document[]> {
+type FilterType = 'unlinked' | 'linked' | 'all';
+
+async function getDocuments(filter: FilterType): Promise<Document[]> {
   try {
-    const documents = await sql<Document[]>`
-      SELECT 
-        d.id,
-        d.title,
-        d.document_type,
-        d.content_text,
-        d.source_url,
-        d.local_path,
-        d.file_size_bytes,
-        d.published_date,
-        s.name as source_name
-      FROM documents d
-      JOIN sources s ON d.source_id = s.id
-      ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
-      LIMIT 50
-    `;
+    let documents: Document[];
+    
+    if (filter === 'unlinked') {
+      documents = await sql<Document[]>`
+        SELECT 
+          d.id,
+          d.title,
+          d.document_type,
+          d.content_text,
+          d.source_url,
+          d.local_path,
+          d.file_size_bytes,
+          d.published_date,
+          s.name as source_name,
+          d.ai_summary,
+          0 as event_count
+        FROM documents d
+        JOIN sources s ON d.source_id = s.id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id
+        )
+        ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
+        LIMIT 100
+      `;
+    } else if (filter === 'linked') {
+      documents = await sql<Document[]>`
+        SELECT 
+          d.id,
+          d.title,
+          d.document_type,
+          d.content_text,
+          d.source_url,
+          d.local_path,
+          d.file_size_bytes,
+          d.published_date,
+          s.name as source_name,
+          d.ai_summary,
+          (SELECT COUNT(*) FROM event_documents ed WHERE ed.document_id = d.id)::int as event_count
+        FROM documents d
+        JOIN sources s ON d.source_id = s.id
+        WHERE EXISTS (
+          SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id
+        )
+        ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
+        LIMIT 100
+      `;
+    } else {
+      documents = await sql<Document[]>`
+        SELECT 
+          d.id,
+          d.title,
+          d.document_type,
+          d.content_text,
+          d.source_url,
+          d.local_path,
+          d.file_size_bytes,
+          d.published_date,
+          s.name as source_name,
+          d.ai_summary,
+          (SELECT COUNT(*) FROM event_documents ed WHERE ed.document_id = d.id)::int as event_count
+        FROM documents d
+        JOIN sources s ON d.source_id = s.id
+        ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
+        LIMIT 100
+      `;
+    }
     return documents;
   } catch (error) {
     console.error('Failed to fetch documents:', error);
@@ -93,8 +147,14 @@ function truncateText(text: string | null, maxLength: number = 200): string {
   return text.substring(0, maxLength).trim() + '...';
 }
 
-export default async function DocumentsPage() {
-  const documents = await getDocuments();
+export default async function DocumentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ filter?: string }>;
+}) {
+  const params = await searchParams;
+  const filter = (params.filter as FilterType) || 'unlinked';
+  const documents = await getDocuments(filter);
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -131,7 +191,44 @@ export default async function DocumentsPage() {
 
       {/* Main Content */}
       <main className="container py-8">
-        <h1 className="text-3xl font-bold mb-8">Documents</h1>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+          <h1 className="text-3xl font-bold">Documents</h1>
+          
+          {/* Filter buttons */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground mr-2">Show:</span>
+            <Link
+              href="/documents?filter=unlinked"
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                filter === 'unlinked'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted hover:bg-muted/80 text-muted-foreground'
+              }`}
+            >
+              Unlinked
+            </Link>
+            <Link
+              href="/documents?filter=linked"
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                filter === 'linked'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted hover:bg-muted/80 text-muted-foreground'
+              }`}
+            >
+              Linked
+            </Link>
+            <Link
+              href="/documents?filter=all"
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                filter === 'all'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted hover:bg-muted/80 text-muted-foreground'
+              }`}
+            >
+              All
+            </Link>
+          </div>
+        </div>
         
         {documents.length === 0 ? (
           <div className="text-center py-12">
@@ -158,6 +255,29 @@ export default async function DocumentsPage() {
                       <span className={`text-xs font-medium px-2 py-1 rounded-full ${getDocumentTypeBadgeColor(doc.document_type)}`}>
                         {getDocumentTypeLabel(doc.document_type)}
                       </span>
+                      {doc.event_count > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-green-100 text-green-700">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                          </svg>
+                          {doc.event_count} event{doc.event_count !== 1 ? 's' : ''}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-700">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                          Unlinked
+                        </span>
+                      )}
+                      {doc.ai_summary && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                          </svg>
+                          ✨ AI Summary
+                        </span>
+                      )}
                     </div>
                     <h2 className="text-xl font-semibold mb-2">{doc.title}</h2>
                     {doc.content_text && (

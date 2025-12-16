@@ -20,15 +20,79 @@ assistant:
 # PUBLIC DATA SOURCES
 # =============================================================================
 sources:
+  # ---------------------------------------------------------------------------
+  # ENABLED: CivicPlus AgendaCenter sources (meeting documents)
+  # ---------------------------------------------------------------------------
+  # These scrape mytwinsburg.com AgendaCenter for agendas, minutes, and videos.
+  # Each committee is a separate source for clear visibility in the web view.
+  # Run BEFORE iCalendar so events are attributed to specific committees.
+  # ---------------------------------------------------------------------------
+
+  # PROVIDES: City Council regular meeting agendas, minutes, videos
+  # DATA: Meeting documents (PDF agendas/minutes), YouTube video links
+  # MEETINGS: 1st & 3rd Tuesdays at 7:00 PM
   - name: "City Council"
     driver: "civic_plus"
+    enabled: true
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
       categories:
         - "City Council"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Finance Committee meeting agendas, minutes
+  # DATA: Budget reviews, financial reports, appropriations
+  # MEETINGS: Typically 4th Tuesday at 6:00 PM
+  - name: "Finance Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Finance Committee"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Safety Committee meeting agendas, minutes
+  # DATA: Police, fire, EMS matters, public safety issues
+  - name: "Safety Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Safety Committee"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Public Works Committee meeting agendas, minutes
+  # DATA: Streets, utilities, infrastructure, service department matters
+  - name: "Public Works Committee"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Public Works Committee"
       max_years: 2
     retry:
@@ -38,14 +102,52 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
-  - name: "Planning & Zoning"
+  # PROVIDES: Planning Commission meeting agendas, minutes
+  # DATA: Meeting documents for land use, zoning changes, development plans
+  # MEETINGS: 2nd & 4th Thursday at 7:00 PM
+  - name: "Planning Commission"
     driver: "civic_plus"
+    enabled: true
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
       categories:
         - "Planning Commission"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Board of Zoning Appeals meeting agendas, minutes
+  # DATA: Variance requests, conditional use permits, appeals
+  - name: "Board of Zoning Appeals"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Board of Zoning Appeals"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Architecture Review Board meeting agendas, minutes
+  # DATA: Building design reviews, facade approvals, sign permits
+  - name: "Architecture Review Board"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 6 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Architecture Review Board"
       max_years: 2
     retry:
@@ -55,15 +157,69 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
-  - name: "Boards & Commissions"
+  # PROVIDES: Parks & Recreation Commission meeting agendas, minutes
+  # DATA: Parks programs, recreation facilities, trail planning
+  - name: "Parks & Recreation Commission"
     driver: "civic_plus"
+    enabled: true
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
       categories:
         - "Parks & Recreation Commission"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Environmental Commission meeting agendas, minutes
+  # DATA: Environmental issues, sustainability, conservation
+  - name: "Environmental Commission"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Environmental Commission"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Civil Service Commission meeting agendas, minutes
+  # DATA: Personnel matters, hiring, promotions, civil service rules
+  - name: "Civil Service Commission"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Civil Service Commission"
+      max_years: 2
+    retry:
+      max_attempts: 3
+      backoff_seconds: 60
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # PROVIDES: Capital Improvement Board meeting agendas, minutes  
+  # DATA: Infrastructure projects, capital budgeting, major expenditures
+  - name: "Capital Improvement Board"
+    driver: "civic_plus"
+    enabled: true
+    schedule: "0 7 * * *"
+    params:
+      base_url: "https://www.mytwinsburg.com"
+      categories:
         - "Capital Improvement Board"
       max_years: 2
     retry:
@@ -73,50 +229,29 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
-  - name: "School Board"
-    driver: "aspnet_generic"
-    enabled: false  # Temporarily disabled - site too slow, causes timeouts
-    schedule: "0 */4 * * *"
-    params:
-      url: "https://www.twinsburg.k12.oh.us/meetingsandagendas.aspx"
-    rate_limit:
-      delay_seconds: 3
-      max_concurrent: 1
-
-  - name: "Public Library"
-    driver: "libcal"
-    schedule: "0 7 * * *"
-    params:
-      library_id: "twinsburglibrary"
-      iid: 4446  # LibCal institutional ID
-    rate_limit:
-      delay_seconds: 2
-
-  - name: "Historical Society"
-    driver: "rss"
-    schedule: "0 8 * * *"
-    params:
-      feed_url: "https://twinsburghistoricalsociety.org/events/feed"
-    rate_limit:
-      delay_seconds: 2
-      max_concurrent: 1
-
-  # HTML Calendar scraper - gets events further into the future than RSS
+  # PROVIDES: Parks & Rec events (sports registrations, programs, activities)
+  # DATA: Event titles, dates, descriptions from calendar HTML
+  # SCRAPES: Calendar HTML pages (different from AgendaCenter)
   - name: "Parks & Recreation"
     driver: "civic_plus_calendar"
+    enabled: false  # Disabled - duplicates iCalendar events
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
       calendar_ids:
-        - 22  # Parks & Recreation
+        - 22  # Parks & Recreation calendar
       days_ahead: 90
       days_back: 7
     rate_limit:
       delay_seconds: 2
       max_concurrent: 1
 
+  # PROVIDES: General community events (festivals, closures, public notices)
+  # DATA: Event titles, dates, descriptions from main city calendar
+  # SCRAPES: Calendar HTML pages
   - name: "Community Events"
     driver: "civic_plus_calendar"
+    enabled: false  # Disabled - duplicates iCalendar events
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -128,9 +263,12 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
-  # RSS-based sources (lightweight alternative to HTML scraping)
+  # PROVIDES: Quick updates for new agendas posted
+  # DATA: RSS feed of newly posted agendas (lightweight polling)
+  # ADVANTAGE: Faster detection of new documents than full HTML scrape
   - name: "City Council RSS"
     driver: "civic_plus_rss"
+    enabled: false  # Disabled - duplicates iCalendar events
     schedule: "30 */2 * * *"  # Every 2 hours for quick updates
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -143,8 +281,12 @@ sources:
       delay_seconds: 1
       max_concurrent: 1
 
+  # PROVIDES: Quick updates for new calendar events
+  # DATA: RSS feed of calendar events with optional full detail fetch
+  # ADVANTAGE: Lightweight polling for new events
   - name: "Calendar RSS"
     driver: "civic_plus_rss"
+    enabled: false  # Disabled - duplicates iCalendar events
     schedule: "0 */4 * * *"  # Every 4 hours
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -158,10 +300,58 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
-  # Summit Metroparks uses bot protection (403 Forbidden with standard HTTP clients)
-  # Would need Playwright-based driver to bypass protection
-  # Website: https://www.summitmetroparks.org/
-  # Events RSS: https://www.summitmetroparks.org/programs-events/feed/
+  # ===========================================================================
+  # ACTIVE: Non-City Sources (unique data, not duplicates)
+  # ===========================================================================
+
+  # PROVIDES: School board meetings, agendas, minutes
+  # DATA: K-12 school district governance meetings
+  # STATUS: Disabled - school website is slow and causes timeouts
+  # UNIQUE: Only source for school district data (not on city calendar)
+  - name: "School Board"
+    driver: "aspnet_generic"
+    enabled: false  # Temporarily disabled - site too slow, causes timeouts
+    schedule: "0 */4 * * *"
+    params:
+      url: "https://www.twinsburg.k12.oh.us/meetingsandagendas.aspx"
+    rate_limit:
+      delay_seconds: 3
+      max_concurrent: 1
+
+  # PROVIDES: Library programs, events, book clubs, children's activities
+  # DATA: Event titles, dates, times, descriptions, registration info
+  # UNIQUE: Only source for library events (separate from city calendar)
+  # EXAMPLES: Story time, summer reading, author visits, computer classes
+  - name: "Public Library"
+    driver: "libcal"
+    schedule: "0 7 * * *"
+    params:
+      library_id: "twinsburglibrary"
+      iid: 4446  # LibCal institutional ID
+    rate_limit:
+      delay_seconds: 2
+
+  # PROVIDES: Historical society events, museum programs, heritage activities
+  # DATA: RSS feed of events from historical society website
+  # UNIQUE: Only source for historical/heritage events
+  # EXAMPLES: Historic home tours, genealogy workshops, artifact exhibits
+  - name: "Historical Society"
+    driver: "rss"
+    schedule: "0 8 * * *"
+    params:
+      feed_url: "https://twinsburghistoricalsociety.org/events/feed"
+    rate_limit:
+      delay_seconds: 2
+      max_concurrent: 1
+
+  # ===========================================================================
+  # DISABLED: Regional Parks (technical limitations)
+  # ===========================================================================
+
+  # WOULD PROVIDE: Summit Metroparks nature programs, hikes, events
+  # EXAMPLES: Bird walks, nature photography, kayaking, holiday events
+  # STATUS: Blocked by bot protection (403 Forbidden)
+  # FIX NEEDED: Playwright-based driver to bypass Cloudflare/bot protection
   - name: "Summit Metroparks"
     driver: "rss"
     enabled: false  # Disabled - bot protection requires Playwright
@@ -172,13 +362,13 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
-  # Cleveland Metroparks uses a WebTrac system (myvscloud.com) for events
-  # which doesn't have an RSS feed. Would need a custom driver with Playwright.
-  # Website: https://www.clevelandmetroparks.com/
-  # Events: https://ohclevelandmetroparksweb.myvscloud.com/webtrac/web/
+  # WOULD PROVIDE: Cleveland Metroparks programs, nature center events
+  # EXAMPLES: Zoo events, nature programs, outdoor recreation
+  # STATUS: No RSS feed - uses WebTrac registration system
+  # FIX NEEDED: Custom WebTrac driver with Playwright
   - name: "Cleveland Metroparks"
     driver: "rss"
-    enabled: false  # Disabled - no RSS feed available, needs custom WebTrac driver
+    enabled: false  # Disabled - no RSS feed, needs custom WebTrac driver
     schedule: "0 5 * * *"
     params:
       feed_url: "https://www.clevelandmetroparks.com/feed/"  # Does not exist
@@ -186,10 +376,32 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
+  # ===========================================================================
+  # City iCalendar - CATCH-ALL (runs last)
+  # ===========================================================================
+  # PROVIDES: Any city events not captured by specific committee sources
+  # DATA: Event titles, dates/times, locations, descriptions
+  # WHY LAST: Runs after committee-specific sources so events get attributed
+  #           to the right source. This catches anything that slipped through.
+  # FORMAT: Structured iCalendar (.ics) with precise timestamps and locations
+  - name: "City Calendar (Other)"
+    driver: "icalendar"
+    schedule: "0 8 * * *"  # Run AFTER all AgendaCenter sources
+    params:
+      feed_url: "https://www.mytwinsburg.com/common/modules/iCalendar/iCalendar.aspx?catID=14&feed=calendar"
+      civic_only: true  # Only include government/civic meetings, not community events
+    rate_limit:
+      delay_seconds: 1
+      max_concurrent: 1
+
 # =============================================================================
 # PRIVATE/OPTIONAL SOURCES
 # =============================================================================
+# These sources require API keys or have limited public access
 private_sources:
+  # WOULD PROVIDE: Chamber of Commerce business events, networking, workshops
+  # EXAMPLES: Business after hours, ribbon cuttings, economic development
+  # STATUS: Disabled - may need verification of RSS feed availability
   - name: "Chamber of Commerce"
     driver: "rss"
     enabled: false
@@ -199,6 +411,10 @@ private_sources:
     rate_limit:
       delay_seconds: 1
 
+  # WOULD PROVIDE: Community group events from Facebook
+  # EXAMPLES: Neighborhood gatherings, garage sales, community discussions
+  # STATUS: Disabled - requires Facebook API authentication
+  # FIX NEEDED: Facebook Graph API integration with app credentials
   - name: "Community Facebook Groups"
     driver: "facebook_events"
     enabled: false

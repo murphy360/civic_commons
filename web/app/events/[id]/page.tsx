@@ -28,6 +28,8 @@ interface EventDocument {
   relationship: string;
   source_url: string | null;
   content_text: string | null;
+  ai_summary: string | null;
+  published_date: Date | null;
 }
 
 async function getEvent(id: number): Promise<Event | null> {
@@ -69,7 +71,9 @@ async function getEventDocuments(eventId: number): Promise<EventDocument[]> {
         d.document_type,
         ed.relationship,
         d.source_url,
-        d.content_text
+        d.content_text,
+        d.ai_summary,
+        d.published_date
       FROM event_documents ed
       JOIN documents d ON ed.document_id = d.id
       WHERE ed.event_id = ${eventId}
@@ -95,6 +99,31 @@ function formatDate(date: Date): string {
     month: 'long',
     day: 'numeric',
   });
+}
+
+function formatShortDate(date: Date | null): string {
+  if (!date) return '';
+  return new Date(date).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function formatDateDiff(eventDate: Date, publishedDate: Date | null): string | null {
+  if (!publishedDate) return null;
+  
+  const eventTime = new Date(eventDate).getTime();
+  const publishTime = new Date(publishedDate).getTime();
+  const diffDays = Math.round((publishTime - eventTime) / (1000 * 60 * 60 * 24));
+  
+  if (diffDays === 0) return 'same day';
+  if (diffDays > 0) {
+    return `${diffDays} day${diffDays !== 1 ? 's' : ''} after`;
+  } else {
+    const absDays = Math.abs(diffDays);
+    return `${absDays} day${absDays !== 1 ? 's' : ''} before`;
+  }
 }
 
 function formatTime(date: Date): string {
@@ -284,20 +313,47 @@ export default async function EventDetailPage({
           <div className="mt-8">
             <h2 className="text-2xl font-bold mb-4">Documents</h2>
             <div className="grid gap-4">
-              {documents.map((doc) => (
+              {documents.map((doc) => {
+                const dateDiff = formatDateDiff(event.start_time, doc.published_date);
+                return (
                 <div
                   key={doc.id}
                   className="border rounded-lg p-6"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
                         <span className={`text-xs font-medium px-2 py-1 rounded-full ${getRelationshipColor(doc.relationship)}`}>
                           {getRelationshipLabel(doc.relationship)}
                         </span>
+                        {doc.published_date && (
+                          <span className="text-xs text-muted-foreground">
+                            {formatShortDate(doc.published_date)}
+                            {dateDiff && (
+                              <span className={`ml-1 ${
+                                dateDiff.includes('before') ? 'text-green-600' : 
+                                dateDiff.includes('after') ? 'text-blue-600' : 
+                                'text-gray-600'
+                              }`}>
+                                ({dateDiff})
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {doc.ai_summary && (
+                          <span className="text-xs font-medium px-2 py-1 rounded-full bg-indigo-100 text-indigo-800">
+                            ✨ AI Summary
+                          </span>
+                        )}
                       </div>
                       <h3 className="text-lg font-semibold mb-2">{doc.title}</h3>
-                      {doc.content_text && (
+                      {doc.ai_summary ? (
+                        <div className="bg-indigo-50 border border-indigo-100 rounded-md p-3 mb-2">
+                          <p className="text-sm text-indigo-900">
+                            {doc.ai_summary}
+                          </p>
+                        </div>
+                      ) : doc.content_text && (
                         <p className="text-muted-foreground text-sm line-clamp-3">
                           {doc.content_text}
                         </p>
@@ -325,7 +381,7 @@ export default async function EventDetailPage({
                     </div>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           </div>
         )}

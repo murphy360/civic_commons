@@ -18,6 +18,8 @@ interface Document {
   published_date: Date | null;
   created_at: Date;
   source_name: string;
+  ai_summary: string | null;
+  ai_summary_updated_at: Date | null;
 }
 
 interface RelatedEvent {
@@ -43,6 +45,8 @@ async function getDocument(id: number): Promise<Document | null> {
         d.mime_type,
         d.published_date,
         d.created_at,
+        d.ai_summary,
+        d.ai_summary_updated_at,
         s.name as source_name
       FROM documents d
       JOIN sources s ON d.source_id = s.id
@@ -83,6 +87,24 @@ function formatDate(date: Date | null): string {
     month: 'long',
     day: 'numeric',
   });
+}
+
+function getYouTubeVideoId(url: string | null): string | null {
+  if (!url) return null;
+  
+  // Match youtube.com/watch?v=VIDEO_ID
+  const watchMatch = url.match(/youtube\.com\/watch\?v=([^&]+)/);
+  if (watchMatch) return watchMatch[1];
+  
+  // Match youtu.be/VIDEO_ID
+  const shortMatch = url.match(/youtu\.be\/([^?]+)/);
+  if (shortMatch) return shortMatch[1];
+  
+  // Match youtube.com/embed/VIDEO_ID
+  const embedMatch = url.match(/youtube\.com\/embed\/([^?]+)/);
+  if (embedMatch) return embedMatch[1];
+  
+  return null;
 }
 
 function getDocumentTypeLabel(type: string | null): string {
@@ -240,12 +262,28 @@ export default async function DocumentPage({
 
         {/* Action Buttons */}
         <div className="flex flex-wrap gap-3 mb-8">
-          {/* Download button - prefers local file */}
+          {/* Download button - prefers local file, greyed out for videos */}
           {(() => {
+            const isVideo = document.document_type === 'video';
             const downloadUrl = getDownloadUrl(document);
-            const isLocal = !!document.local_path;
-            if (!downloadUrl) return null;
             
+            if (isVideo) {
+              // Show greyed out button for videos
+              return (
+                <span
+                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-gray-200 text-gray-400 cursor-not-allowed"
+                  title="Videos cannot be downloaded"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Download File
+                </span>
+              );
+            }
+
+            if (!downloadUrl) return null;
+
             return (
               <a
                 href={downloadUrl}
@@ -282,6 +320,29 @@ export default async function DocumentPage({
           )}
         </div>
 
+        {/* AI Summary */}
+        {document.ai_summary && (
+          <div className="mb-8">
+            <div className="flex items-center gap-2 mb-4">
+              <h2 className="text-xl font-semibold">AI Summary</h2>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded-full">
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                </svg>
+                ✨ AI Generated
+              </span>
+            </div>
+            <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-lg">
+              <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{document.ai_summary}</p>
+              {document.ai_summary_updated_at && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Generated: {formatDate(document.ai_summary_updated_at)}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Related Events */}
         {relatedEvents.length > 0 && (
           <div className="mb-8">
@@ -310,6 +371,26 @@ export default async function DocumentPage({
           </div>
         )}
 
+        {/* YouTube Video Player - Show for video documents */}
+        {document.document_type === 'video' && (() => {
+          const videoId = getYouTubeVideoId(document.source_url);
+          if (!videoId) return null;
+          return (
+            <div className="mb-8">
+              <h2 className="text-xl font-semibold mb-4">Video</h2>
+              <div className="border rounded-lg overflow-hidden bg-black aspect-video">
+                <iframe
+                  src={`https://www.youtube.com/embed/${videoId}`}
+                  className="w-full h-full"
+                  title={document.title}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            </div>
+          );
+        })()}
+
         {/* PDF Viewer - Show embedded PDF if we have a local file */}
         {document.local_path && document.mime_type === 'application/pdf' && (
           <div className="mb-8">
@@ -324,8 +405,8 @@ export default async function DocumentPage({
           </div>
         )}
 
-        {/* Fallback PDF viewer using source URL if no local file */}
-        {!document.local_path && document.source_url && (
+        {/* Fallback PDF viewer using source URL if no local file (not for videos) */}
+        {!document.local_path && document.source_url && document.document_type !== 'video' && (
           <div className="mb-8">
             <h2 className="text-xl font-semibold mb-4">Document Preview</h2>
             <div className="border rounded-lg overflow-hidden bg-gray-100">

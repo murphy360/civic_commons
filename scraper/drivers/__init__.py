@@ -14,6 +14,7 @@ from .civic_plus_rss import CivicPlusRssDriver
 from .aspnet_generic import AspNetGenericDriver
 from .rss import RssDriver
 from .libcal import LibCalDriver
+from .icalendar_driver import ICalendarDriver
 
 # Driver registry: maps driver name to class
 DRIVER_REGISTRY: dict[str, Type[BaseDriver]] = {
@@ -23,6 +24,7 @@ DRIVER_REGISTRY: dict[str, Type[BaseDriver]] = {
     "aspnet_generic": AspNetGenericDriver,
     "rss": RssDriver,
     "libcal": LibCalDriver,
+    "icalendar": ICalendarDriver,
     # Add new drivers here
     # "civic_rec": CivicRecDriver,
     # "metroparks": MetroparksDriver,

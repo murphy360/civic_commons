@@ -22,7 +22,8 @@ from pipeline.ai_processor import AIEventProcessor
 async def get_unlinked_documents(conn) -> list[dict]:
     """Get documents that have no event associations."""
     docs = await conn.fetch("""
-        SELECT d.id, d.title, d.content_text, d.document_type, d.published_date, d.local_path
+        SELECT d.id, d.title, d.content_text, d.document_type, 
+               d.published_date, d.meeting_date, d.local_path
         FROM documents d
         LEFT JOIN event_documents ed ON d.id = ed.document_id
         WHERE ed.document_id IS NULL
@@ -31,16 +32,17 @@ async def get_unlinked_documents(conn) -> list[dict]:
     return [dict(d) for d in docs]
 
 
-async def get_upcoming_events(conn, days_ahead: int = 90) -> list[dict]:
-    """Get events in the next N days for matching."""
-    cutoff = datetime.now() + timedelta(days=days_ahead)
+async def get_upcoming_events(conn, days_ahead: int = 90, days_back: int = 365) -> list[dict]:
+    """Get events in the date range for matching (past year + next N days)."""
+    past_cutoff = datetime.now() - timedelta(days=days_back)
+    future_cutoff = datetime.now() + timedelta(days=days_ahead)
     events = await conn.fetch("""
         SELECT id, title, start_time, description
         FROM events
-        WHERE start_time >= NOW() - INTERVAL '7 days'
-          AND start_time <= $1
+        WHERE start_time >= $1
+          AND start_time <= $2
         ORDER BY start_time
-    """, cutoff)
+    """, past_cutoff, future_cutoff)
     return [
         {
             'id': e['id'],
@@ -109,13 +111,18 @@ async def main():
         for doc in documents:
             print(f"\nProcessing: {doc['title']}")
             print(f"  Type: {doc['document_type'] or 'unknown'}")
+            if doc.get('meeting_date'):
+                print(f"  Meeting Date: {doc['meeting_date']}")
             if doc.get('published_date'):
-                print(f"  Date: {doc['published_date']}")
+                print(f"  Published Date: {doc['published_date']}")
             
-            # Format document date for AI
+            # Use meeting_date for linking (when the meeting occurred)
+            # Fall back to published_date if meeting_date not available
             doc_date = None
-            if doc.get('published_date'):
-                doc_date = doc['published_date'].strftime('%Y-%m-%d') if hasattr(doc['published_date'], 'strftime') else str(doc['published_date'])
+            if doc.get('meeting_date'):
+                doc_date = doc['meeting_date'].strftime('%Y-%m-%d') if hasattr(doc['meeting_date'], 'strftime') else str(doc['meeting_date'])[:10]
+            elif doc.get('published_date'):
+                doc_date = doc['published_date'].strftime('%Y-%m-%d') if hasattr(doc['published_date'], 'strftime') else str(doc['published_date'])[:10]
             
             # Use AI to find related events
             matches = await ai.find_related_events(

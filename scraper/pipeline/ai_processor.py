@@ -10,9 +10,11 @@ This module provides intelligent processing of scraped events:
 
 Can be used standalone or via MCP tools.
 
-Note: Low-level API client and PDF extraction have been moved to:
-- pipeline.ai.client.GeminiClient
-- pipeline.ai.pdf_extractor.extract_pdf_text
+Note: Specialized functionality has been moved to submodules:
+- pipeline.ai.client.GeminiClient - API client
+- pipeline.ai.pdf_extractor.extract_pdf_text - PDF extraction
+- pipeline.ai.linker.DocumentLinker - Document-to-event linking
+- pipeline.ai.summarizer.EventSummarizer - Event summary generation
 """
 
 import json
@@ -20,7 +22,7 @@ import logging
 from typing import Optional
 
 from models import Event, EventType
-from .ai import GeminiClient, extract_pdf_text
+from .ai import GeminiClient, extract_pdf_text, DocumentLinker, EventSummarizer
 
 logger = logging.getLogger("civic.ai")
 
@@ -29,8 +31,8 @@ class AIEventProcessor:
     """
     Process and enrich events using AI.
     
-    Supports Gemini (default) and can be extended for other providers.
-    This class acts as a facade, delegating to specialized modules.
+    This class acts as a facade, delegating specialized operations
+    to dedicated modules while maintaining backward compatibility.
     """
     
     def __init__(self, api_key: Optional[str] = None, provider: str = "gemini"):
@@ -43,6 +45,10 @@ class AIEventProcessor:
         """
         self.provider = provider
         self._gemini = GeminiClient(api_key)
+        
+        # Initialize specialized processors
+        self._linker = DocumentLinker(self._gemini)
+        self._summarizer = EventSummarizer(self._gemini)
     
     @property
     def enabled(self) -> bool:
@@ -418,8 +424,7 @@ JSON response:"""
         """
         Use AI to find events that should be associated with a document.
         
-        Acts as an intelligent secretary that reviews a document and matches it
-        to relevant upcoming events based on title, content, dates, and context.
+        Delegates to DocumentLinker for the actual implementation.
         
         Args:
             document_title: Title of the document
@@ -432,124 +437,14 @@ JSON response:"""
         Returns:
             List of dicts with event_id and relationship type
         """
-        if not self.enabled:
-            logger.warning("AI not enabled - cannot find related events")
-            return []
-        
-        if not events:
-            return []
-        
-        system_prompt = """You are a secretary for a local government office. Your job is to organize documents and link them to the correct events.
-
-When you receive a document, you must:
-1. Review the document title, date, and any content
-2. Look at the list of upcoming events  
-3. Determine which events (if any) the document relates to
-
-CRITICAL RULES:
-- AGENDAS and MINUTES must link to exactly ONE meeting event (the specific meeting they are for)
-- Use dates to match: an agenda dated "November 17, 2025" should link to a meeting on that date
-- Flyers, guidelines, and program materials CAN link to multiple events (e.g., all sessions of a recurring class)
-
-Match documents to events based on:
-- DATE ALIGNMENT: Match document dates to event dates (most important for agendas/minutes)
-- Event name similarity (e.g., "Kids Yoga Flyer" → "Kids' Yoga with Yoga Squirrel")  
-- Topic/activity alignment
-- Program or series connections (for recurring events)
-
-Relationship types:
-- "agenda": Document is an agenda for a specific meeting (LINK TO ONE EVENT ONLY)
-- "minutes": Document contains minutes from a specific meeting (LINK TO ONE EVENT ONLY)
-- "attachment": Document is related material (flyers, guidelines, forms) - can link to multiple
-- "packet": Document is a meeting packet (LINK TO ONE EVENT ONLY)
-
-Always respond with valid JSON only."""
-
-        # Format events list for the prompt - include more detail
-        events_text = "\n".join([
-            f"- Event ID {e['id']}: \"{e['title']}\" on {e['start_time']}"
-            for e in events[:50]  # Limit to 50 events to avoid token limits
-        ])
-        
-        # Build document context
-        doc_context_parts = [f'Document Title: "{document_title}"']
-        
-        if document_date:
-            doc_context_parts.append(f"Document Date: {document_date}")
-        
-        if document_type:
-            doc_context_parts.append(f"Document Type: {document_type}")
-        
-        doc_context = "\n".join(doc_context_parts)
-        
-        content_preview = ""
-        if document_content:
-            # Truncate content to avoid token limits
-            content_preview = f"\n\nDocument content preview:\n{document_content[:1500]}"
-        elif local_path:
-            # Try to read PDF content if we have a local file but no content
-            pdf_text = await self._extract_pdf_text(local_path)
-            if pdf_text:
-                content_preview = f"\n\nDocument content (extracted from PDF):\n{pdf_text[:1500]}"
-        
-        prompt = f"""A new document has arrived that needs to be filed.
-
-{doc_context}{content_preview}
-
-Upcoming Events:
-{events_text}
-
-Which events should this document be linked to?
-
-REMEMBER:
-- If this is an AGENDA or MINUTES, find the ONE specific meeting it belongs to (match by date!)
-- If this is a flyer or informational document, it may apply to multiple related events
-
-Return a JSON object with:
-- matches: array of objects with "event_id" (number) and "relationship" (string)
-- reasoning: brief explanation of why these events match (or why no match)
-
-If no events match, return an empty matches array.
-
-JSON response:"""
-
-        response = await self._call_gemini(prompt, system_prompt)
-        
-        if not response:
-            return []
-        
-        try:
-            # Parse JSON response
-            data = json.loads(response.strip().removeprefix("```json").removesuffix("```"))
-            
-            matches = data.get("matches", [])
-            reasoning = data.get("reasoning", "")
-            
-            if matches:
-                logger.info(f"AI found {len(matches)} event matches for document '{document_title}': {reasoning}")
-            else:
-                logger.debug(f"AI found no event matches for document '{document_title}': {reasoning}")
-            
-            # Validate that returned event IDs exist in our events list
-            valid_ids = {e['id'] for e in events}
-            validated_matches = [
-                m for m in matches 
-                if m.get('event_id') in valid_ids and m.get('relationship')
-            ]
-            
-            # Enforce single-event rule for agendas and minutes
-            agenda_minute_matches = [m for m in validated_matches if m.get('relationship') in ('agenda', 'minutes', 'packet')]
-            if len(agenda_minute_matches) > 1:
-                logger.warning(f"AI returned multiple matches for agenda/minutes - keeping only first match")
-                # Keep only the first agenda/minutes match, plus any attachments
-                other_matches = [m for m in validated_matches if m.get('relationship') not in ('agenda', 'minutes', 'packet')]
-                validated_matches = [agenda_minute_matches[0]] + other_matches
-            
-            return validated_matches
-            
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"Failed to parse AI response for document linking: {e}")
-            return []
+        return await self._linker.find_related_events(
+            document_title=document_title,
+            document_content=document_content,
+            events=events,
+            document_date=document_date,
+            document_type=document_type,
+            local_path=local_path,
+        )
 
     async def generate_event_summary(
         self,
@@ -560,134 +455,22 @@ JSON response:"""
         """
         Generate an AI overview/summary of an event using all available information.
         
-        For meetings with agendas/minutes, focuses on non-routine items.
-        For community events, provides a helpful overview.
+        Delegates to EventSummarizer for the actual implementation.
         
         Args:
             event: Event dict with id, title, description, start_time, location, category
             sources: List of source dicts with name, raw_data
-            documents: List of document dicts with title, document_type, relationship, content_text, local_path
+            documents: List of document dicts with title, document_type, relationship, 
+                       content_text, local_path
             
         Returns:
             AI-generated summary or None on failure
         """
-        if not self.enabled:
-            logger.warning("AI not enabled - cannot generate event summary")
-            return None
-        
-        # Determine if this is a meeting (has agenda/minutes)
-        is_meeting = any(
-            d.get('relationship') in ('agenda', 'minutes', 'packet') 
-            for d in documents
+        return await self._summarizer.generate_summary(
+            event=event,
+            sources=sources,
+            documents=documents,
         )
-        
-        # Build context from all sources
-        source_info = []
-        for src in sources:
-            info = f"- {src.get('name', 'Unknown source')}"
-            if src.get('raw_data'):
-                # Include key raw data fields if available
-                raw = src['raw_data']
-                if isinstance(raw, dict):
-                    if raw.get('description'):
-                        info += f"\n  Description: {raw['description'][:500]}"
-            source_info.append(info)
-        
-        # Build document content
-        doc_content = []
-        for doc in documents:
-            doc_info = f"### {doc.get('title', 'Untitled')} ({doc.get('relationship', 'related')})"
-            
-            # Try to get content from content_text first
-            content = doc.get('content_text')
-            
-            # If no content_text, try to extract from PDF
-            if not content and doc.get('local_path'):
-                content = await self._extract_pdf_text(doc['local_path'], max_pages=5)
-            
-            if content:
-                # Truncate to reasonable size for AI
-                doc_info += f"\n{content[:3000]}"
-            
-            doc_content.append(doc_info)
-        
-        # Choose appropriate system prompt based on event type
-        if is_meeting:
-            system_prompt = """You are a civic information assistant helping residents understand local government meetings.
-
-Your job is to create a concise, helpful summary of a government meeting based on available documents.
-
-FOCUS ON:
-- Non-routine agenda items (skip standard approvals like minutes approval, roll call)
-- Key decisions, votes, or discussions
-- Public hearing items
-- New business or special presentations
-- Items that directly affect residents
-
-SKIP or briefly mention:
-- Routine procedural items (call to order, roll call, adjournment)
-- Standard consent agenda items unless notable
-- Minutes approval from previous meetings
-
-FORMAT:
-- Start with a one-sentence overview
-- Use bullet points for key items
-- Keep it under 200 words
-- Be factual and neutral
-- If agenda only, say "Scheduled to discuss:" 
-- If minutes available, say "Discussed:" or "Decided:" """
-        else:
-            system_prompt = """You are a civic information assistant helping residents learn about community events.
-
-Your job is to create a helpful, engaging summary of a community event.
-
-INCLUDE:
-- What the event is about
-- Who it's for (families, seniors, all ages, etc.)
-- Key details like registration requirements or things to bring
-- Why someone might want to attend
-
-FORMAT:
-- Start with an engaging one-sentence hook
-- Include practical details
-- Keep it under 150 words
-- Be warm and inviting but factual"""
-
-        # Build the prompt
-        prompt = f"""Create a summary for this event:
-
-**{event.get('title', 'Untitled Event')}**
-- Date: {event.get('start_time', 'TBD')}
-- Location: {event.get('location', 'Not specified')}
-- Category: {event.get('category', 'General')}
-
-Original Description:
-{event.get('description', 'No description available')[:500]}
-
-Sources:
-{chr(10).join(source_info) if source_info else 'No additional source information'}
-
-Documents:
-{chr(10).join(doc_content) if doc_content else 'No documents available'}
-
-Generate a concise, helpful summary:"""
-
-        response = await self._call_gemini(prompt, system_prompt)
-        
-        if response:
-            # Clean up response
-            summary = response.strip()
-            # Remove any markdown code blocks if present
-            if summary.startswith("```"):
-                summary = summary.split("```")[1]
-                if summary.startswith("markdown") or summary.startswith("text"):
-                    summary = summary.split("\n", 1)[1] if "\n" in summary else summary
-            summary = summary.strip()
-            
-            logger.info(f"Generated AI summary for event '{event.get('title')}' ({len(summary)} chars)")
-            return summary
-        
-        return None
 
     async def _extract_pdf_text(self, local_path: str, max_pages: int = 3) -> Optional[str]:
         """

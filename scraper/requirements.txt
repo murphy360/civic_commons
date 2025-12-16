@@ -20,6 +20,9 @@ lxml>=4.9.0
 # RSS Parsing
 feedparser>=6.0.0
 
+# iCalendar Parsing
+icalendar>=5.0.0
+
 # Browser Automation (for ASP.NET driver)
 playwright>=1.40.0
 

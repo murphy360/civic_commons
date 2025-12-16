@@ -22,6 +22,7 @@ from drivers import get_driver
 from models import Event, Document
 from pipeline.storage import DatabasePool
 from pipeline.ai_processor import AIEventProcessor
+from pipeline.ai import DocumentSummarizer, GeminiClient
 from pipeline.backfill import BackfillManager
 from pipeline.downloader import DocumentDownloader
 
@@ -51,6 +52,7 @@ class Worker:
         self.scheduler = AsyncIOScheduler()
         self.db_pool: DatabasePool | None = None
         self.ai_processor: Optional[AIEventProcessor] = None
+        self.doc_summarizer: Optional[DocumentSummarizer] = None
         self.backfill_manager: Optional[BackfillManager] = None
         self.document_downloader: Optional[DocumentDownloader] = None
         self._shutdown_event = asyncio.Event()
@@ -70,9 +72,12 @@ class Worker:
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
         if gemini_key:
             self.ai_processor = AIEventProcessor(api_key=gemini_key)
-            logger.info("AI event processor enabled")
+            # Create a separate document summarizer using the same client
+            gemini_client = GeminiClient(api_key=gemini_key)
+            self.doc_summarizer = DocumentSummarizer(gemini_client)
+            logger.info("AI event processor and document summarizer enabled")
         else:
-            logger.info("AI event processor disabled (no GEMINI_API_KEY)")
+            logger.info("AI processing disabled (no GEMINI_API_KEY)")
         
         # Initialize backfill manager
         backfill_months = int(os.getenv("BACKFILL_MONTHS", "12"))
@@ -265,15 +270,17 @@ class Worker:
         """
         from datetime import datetime, timedelta
         
-        # Get upcoming events for matching (next 90 days)
-        cutoff = datetime.now() + timedelta(days=90)
+        # Get events for matching (past year + next 90 days)
+        # We need a wide range to match historical documents with their events
+        past_cutoff = datetime.now() - timedelta(days=365)
+        future_cutoff = datetime.now() + timedelta(days=90)
         events = await conn.fetch("""
             SELECT id, title, start_time, description
             FROM events
-            WHERE start_time >= NOW() - INTERVAL '7 days'
-              AND start_time <= $1
+            WHERE start_time >= $1
+              AND start_time <= $2
             ORDER BY start_time
-        """, cutoff)
+        """, past_cutoff, future_cutoff)
         
         if not events:
             logger.debug("No upcoming events to match documents against")
@@ -291,9 +298,12 @@ class Worker:
         
         for doc_id, document in documents:
             try:
-                # Format document date if available
+                # Use meeting_date for linking (when the meeting occurred)
+                # Fall back to published_at if meeting_date not available
                 doc_date = None
-                if hasattr(document, 'published_at') and document.published_at:
+                if hasattr(document, 'meeting_date') and document.meeting_date:
+                    doc_date = document.meeting_date.strftime('%Y-%m-%d')
+                elif hasattr(document, 'published_at') and document.published_at:
                     doc_date = document.published_at.strftime('%Y-%m-%d')
                 
                 # Get local path if downloaded (stored as file_path in Document model)
@@ -306,13 +316,20 @@ class Worker:
                 if hasattr(document, 'content_markdown') and document.content_markdown:
                     doc_content = document.content_markdown
                 
+                # Get document type - handle both enum and string cases
+                doc_type_str = None
+                if hasattr(document, 'doc_type') and document.doc_type:
+                    # DocumentType is (str, Enum), so it can be used as string directly
+                    # But handle case where it might be a plain string
+                    doc_type_str = str(document.doc_type.value) if hasattr(document.doc_type, 'value') else str(document.doc_type)
+                
                 # Use AI to find related events
                 matches = await self.ai_processor.find_related_events(
                     document_title=document.title,
                     document_content=doc_content,
                     events=events_list,
                     document_date=doc_date,
-                    document_type=document.doc_type.value if hasattr(document, 'doc_type') and document.doc_type else None,
+                    document_type=doc_type_str,
                     local_path=local_path,
                 )
                 
@@ -386,10 +403,10 @@ class Worker:
                 for r in source_rows
             ]
             
-            # Fetch associated documents
+            # Fetch associated documents (including AI summaries)
             doc_rows = await conn.fetch("""
                 SELECT d.id, d.title, d.document_type, ed.relationship, 
-                       d.content_text, d.local_path
+                       d.content_text, d.local_path, d.ai_summary
                 FROM event_documents ed
                 JOIN documents d ON ed.document_id = d.id
                 WHERE ed.event_id = $1
@@ -403,6 +420,7 @@ class Worker:
                     'relationship': d['relationship'],
                     'content_text': d['content_text'],
                     'local_path': d['local_path'],
+                    'ai_summary': d['ai_summary'],
                 }
                 for d in doc_rows
             ]
@@ -435,7 +453,7 @@ class Worker:
         source_name: str,
     ) -> None:
         """
-        Download a document and update its local path in the database.
+        Download a document, generate AI summary, and update the database.
         
         Args:
             conn: Database connection
@@ -445,7 +463,9 @@ class Worker:
         """
         if not self.document_downloader:
             return
-            
+        
+        local_path = None
+        
         try:
             result = await self.document_downloader.download(
                 url=document.original_url,
@@ -455,21 +475,53 @@ class Worker:
             )
             
             if result and result.get("local_path"):
+                local_path = result["local_path"]
                 # Update document with local path
                 await self.db_pool.update_document_local_path(
                     conn,
                     doc_id,
-                    local_path=result["local_path"],
+                    local_path=local_path,
                     file_size_bytes=result.get("file_size"),
                     mime_type=result.get("mime_type"),
                     file_hash=result.get("file_hash"),
                 )
-                logger.debug(f"Downloaded document '{document.title}' -> {result['local_path']}")
+                logger.debug(f"Downloaded document '{document.title}' -> {local_path}")
             elif result is None:
                 logger.debug(f"Skipped download for '{document.title}' (not downloadable)")
                 
         except Exception as e:
             logger.warning(f"Error downloading '{document.title}': {e}")
+        
+        # Generate AI summary for the document
+        if self.doc_summarizer and self.doc_summarizer.enabled:
+            try:
+                # Get document type
+                doc_type = None
+                if hasattr(document, 'doc_type') and document.doc_type:
+                    doc_type = document.doc_type.value if hasattr(document.doc_type, 'value') else str(document.doc_type)
+                
+                # Get content if available
+                content_text = None
+                if hasattr(document, 'content_markdown') and document.content_markdown:
+                    content_text = document.content_markdown
+                
+                summary = await self.doc_summarizer.generate_summary(
+                    title=document.title,
+                    document_type=doc_type,
+                    content_text=content_text,
+                    local_path=local_path,
+                )
+                
+                if summary:
+                    await self.db_pool.update_document_ai_summary(
+                        conn,
+                        doc_id,
+                        ai_summary=summary,
+                    )
+                    logger.info(f"Generated AI summary for document '{document.title}'")
+                    
+            except Exception as e:
+                logger.warning(f"Error generating AI summary for '{document.title}': {e}")
 
     async def _store_results(self, conn, source, events: list, documents: list) -> None:
         """Store scraped results in database and download documents."""
@@ -482,6 +534,8 @@ class Worker:
             name=source.name,
             driver=source.driver,
             config=source.params,
+            is_enabled=source.enabled,
+            schedule=source.schedule,
         )
         
         # Track events with documents for summary generation
@@ -545,6 +599,37 @@ class Worker:
         # Update source health status
         await self.db_pool.update_source_health(conn, source_id, success=True)
 
+    async def _initialize_all_sources(self, configs: list) -> None:
+        """
+        Initialize all sources from configs in the database.
+        
+        This ensures all sources appear in the admin UI immediately,
+        even before they've been scraped.
+        """
+        async with self.db_pool.acquire() as conn:
+            for config in configs:
+                city_id = config.city_profile.name.lower().replace(" ", "_").replace(",", "")
+                
+                # Process both public and private sources
+                all_sources = config.sources + config.private_sources
+                
+                for source in all_sources:
+                    try:
+                        source_id = await self.db_pool.get_or_create_source(
+                            conn,
+                            name=source.name,
+                            driver=source.driver,
+                            config=source.params,
+                            city_id=city_id,
+                            is_enabled=source.enabled,
+                            schedule=source.schedule,
+                        )
+                        logger.debug(f"Initialized source '{source.name}' (id={source_id}, enabled={source.enabled})")
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize source '{source.name}': {e}")
+        
+        logger.info(f"Initialized all sources from {len(configs)} config(s)")
+
     async def run(self) -> None:
         """Main run loop."""
         await self.initialize()
@@ -554,6 +639,9 @@ class Worker:
         configs = load_all_configs(configs_dir)
         self._configs = configs  # Store for backfill access
         logger.info(f"Loaded {len(configs)} city configuration(s)")
+
+        # Initialize ALL sources in database (so they appear in admin immediately)
+        await self._initialize_all_sources(configs)
 
         # Schedule all sources
         self.schedule_sources(configs)
@@ -579,6 +667,8 @@ class Worker:
                                         name=source.name,
                                         driver=source.driver,
                                         config=source.params,
+                                        is_enabled=source.enabled,
+                                        schedule=source.schedule,
                                     )
                                     await self.backfill_manager.initialize_queue_for_source(
                                         conn, source_id, source.name

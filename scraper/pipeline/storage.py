@@ -79,9 +79,20 @@ class DatabasePool:
         driver: str,
         config: dict,
         city_id: str = "twinsburg",
+        is_enabled: bool = True,
+        schedule: str = "",
     ) -> int:
         """
         Get existing source or create new one.
+        
+        Args:
+            conn: Database connection
+            name: Source name from config
+            driver: Driver type (e.g., 'civic_plus', 'rss')
+            config: Source configuration parameters
+            city_id: City identifier
+            is_enabled: Whether the source is enabled for scraping
+            schedule: Cron schedule expression
         
         Returns:
             Source ID (integer)
@@ -96,14 +107,27 @@ class DatabasePool:
         )
         
         if row:
+            # Update existing source with current config values
+            config_json = json.dumps(config) if config else "{}"
+            await conn.execute(
+                """
+                UPDATE sources 
+                SET is_enabled = $1, config = $2, city_id = $3
+                WHERE id = $4
+                """,
+                is_enabled,
+                config_json,
+                city_id,
+                row["id"],
+            )
             return row["id"]
 
         # Create new source
         config_json = json.dumps(config) if config else "{}"
         row = await conn.fetchrow(
             """
-            INSERT INTO sources (city_id, name, source_type, driver_type, url, config)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO sources (city_id, name, source_type, driver_type, url, config, is_enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id
             """,
             city_id,
@@ -112,6 +136,7 @@ class DatabasePool:
             driver,
             config.get("base_url", config.get("feed_url", "")),  # url
             config_json,
+            is_enabled,
         )
         return row["id"]
 
@@ -123,10 +148,14 @@ class DatabasePool:
         error_message: Optional[str] = None,
     ) -> None:
         """Update source health tracking after a scrape."""
+        import logging
+        logger = logging.getLogger("civic.storage")
+        
         now = datetime.utcnow()
+        logger.info(f"Updating source health for source_id={source_id}, success={success}")
         
         if success:
-            await conn.execute(
+            result = await conn.execute(
                 """
                 UPDATE sources SET
                     last_success_at = $1,
@@ -139,8 +168,9 @@ class DatabasePool:
                 now,
                 source_id,
             )
+            logger.info(f"Updated source health (success) for source_id={source_id}: {result}")
         else:
-            await conn.execute(
+            result = await conn.execute(
                 """
                 UPDATE sources SET
                     last_fetched_at = $1,
@@ -153,6 +183,7 @@ class DatabasePool:
                 error_message,
                 source_id,
             )
+            logger.info(f"Updated source health (failure) for source_id={source_id}: {result}")
 
     # =========================================================================
     # EVENT OPERATIONS
@@ -266,7 +297,8 @@ class DatabasePool:
             event.starts_at,
             event.ends_at,
             event.location,
-            getattr(event, 'category', None),
+            # Map event_type enum to category string for database
+            event.event_type.value if hasattr(event, 'event_type') and event.event_type else None,
             getattr(event, 'is_cancelled', False),
             getattr(event, 'is_virtual', False),
             getattr(event, 'virtual_url', None),
@@ -570,9 +602,9 @@ class DatabasePool:
                     source_id, title, document_type, source_url,
                     file_url, content_markdown, file_hash, 
                     local_path, file_size_bytes, mime_type,
-                    created_at, updated_at
+                    published_date, meeting_date, created_at, updated_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
                 RETURNING id
                 """,
                 source_id,
@@ -585,6 +617,8 @@ class DatabasePool:
                 document.file_path,
                 document.file_size_bytes,
                 document.mime_type,
+                document.published_at,  # When document was published/uploaded
+                document.meeting_date,  # When the meeting occurred (for linking)
                 now,
             )
             doc_id = row["id"]
@@ -665,6 +699,32 @@ class DatabasePool:
             file_size_bytes,
             mime_type,
             file_hash,
+            datetime.utcnow(),
+            document_id,
+        )
+
+    async def update_document_ai_summary(
+        self,
+        conn: asyncpg.Connection,
+        document_id: int,
+        ai_summary: str,
+    ) -> None:
+        """
+        Update a document's AI-generated summary.
+        
+        Args:
+            document_id: Database ID of the document
+            ai_summary: AI-generated summary text
+        """
+        await conn.execute(
+            """
+            UPDATE documents SET
+                ai_summary = $1,
+                ai_summary_updated_at = $2,
+                updated_at = $2
+            WHERE id = $3
+            """,
+            ai_summary,
             datetime.utcnow(),
             document_id,
         )

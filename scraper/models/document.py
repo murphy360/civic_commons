@@ -18,6 +18,7 @@ class DocumentType(str, Enum):
     AGENDA = "agenda"           # Meeting agendas
     MINUTES = "minutes"         # Meeting minutes
     PACKET = "packet"           # Full board packets
+    VIDEO = "video"             # Meeting recordings (YouTube, etc.)
     RESOLUTION = "resolution"   # Adopted resolutions
     ORDINANCE = "ordinance"     # Adopted ordinances
     REPORT = "report"           # Staff reports
