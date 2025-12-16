@@ -100,7 +100,8 @@ Your job is to clean up and standardize event information from government websit
 Rules:
 - Keep titles concise but descriptive
 - Remove redundant information
-- Standardize location formats (include city/state if missing)
+- For locations: Only include city/state if you KNOW the actual city from the source context. Do NOT add placeholder text like "Anytown" or "[City]"
+- If the location is just "Council Chambers" or similar, leave it as-is without adding unknown city/state
 - Keep descriptions factual and clear
 - Preserve all important details like times, addresses, and contact info
 

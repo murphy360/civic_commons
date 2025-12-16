@@ -111,9 +111,13 @@ class Worker:
             f"backfill: {backfill_months} months, delay: {backfill_delay}s)"
         )
     
-    async def _enrich_event_with_ai(self, event: Event) -> Event:
+    async def _enrich_event_with_ai(self, event: Event, city_name: str = "") -> Event:
         """
         Use AI to validate and enrich an event.
+        
+        Args:
+            event: The event to enrich
+            city_name: Name of the city for location context
         
         Returns the original or enriched event.
         """
@@ -122,7 +126,8 @@ class Worker:
             
         try:
             # Use AI to normalize the event (clean title, description, categorize)
-            enriched = await self.ai_processor.normalize_event(event)
+            source_context = f"City: {city_name}" if city_name else ""
+            enriched = await self.ai_processor.normalize_event(event, source_context)
             
             # Also validate for quality issues
             is_valid, issues = await self.ai_processor.validate_event(enriched)
@@ -1013,6 +1018,7 @@ class Worker:
                         source=source,
                         events=events,
                         documents=documents,
+                        city_name=config.city_profile.name,
                     )
 
             logger.info(
@@ -1266,11 +1272,18 @@ class Worker:
         except Exception as e:
             logger.warning(f"Error downloading '{document.title}': {e}")
 
-    async def _store_results(self, conn, source, events: list, documents: list) -> None:
+    async def _store_results(self, conn, source, events: list, documents: list, city_name: str = "") -> None:
         """Store scraped results in database and download documents.
         
         AI analysis (summaries) is handled separately by the background
         AI analysis queue processor for better performance.
+        
+        Args:
+            conn: Database connection
+            source: Source configuration
+            events: List of events to store
+            documents: List of standalone documents to store
+            city_name: Name of the city for AI context
         """
         if not events and not documents:
             return
@@ -1290,7 +1303,7 @@ class Worker:
             try:
                 # Optionally enrich with AI if configured (quick normalization only)
                 if self.ai_processor and self.ai_processor.enabled:
-                    event = await self._enrich_event_with_ai(event)
+                    event = await self._enrich_event_with_ai(event, city_name)
                 
                 # Pass AI processor for uncertain deduplication
                 event_id = await self.db_pool.upsert_event(
