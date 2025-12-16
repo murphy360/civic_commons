@@ -3,6 +3,10 @@ import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
+// AI Queue Configuration from environment variables
+const AI_QUEUE_INTERVAL_SECONDS = parseInt(process.env.AI_QUEUE_INTERVAL_SECONDS || '30', 10);
+const AI_QUEUE_BATCH_SIZE = parseInt(process.env.AI_QUEUE_BATCH_SIZE || '1', 10);
+
 interface SourceStatus {
   id: number;
   name: string;
@@ -48,14 +52,31 @@ async function getStats() {
       total: number;
       downloaded: number;
       unlinked: number;
+      with_summaries: number;
     }>>`
       SELECT 
         COUNT(*)::int as total,
         COUNT(*) FILTER (WHERE local_path IS NOT NULL)::int as downloaded,
         COUNT(*) FILTER (WHERE NOT EXISTS (
           SELECT 1 FROM event_documents ed WHERE ed.document_id = documents.id
-        ))::int as unlinked
+        ))::int as unlinked,
+        COUNT(*) FILTER (WHERE ai_summary IS NOT NULL AND ai_summary != '')::int as with_summaries
       FROM documents
+    `;
+
+    // Get AI analysis queue status
+    const aiQueueStats = await sql<Array<{
+      docs_pending: number;
+      docs_linking_pending: number;
+      events_pending: number;
+    }>>`
+      SELECT
+        (SELECT COUNT(*)::int FROM documents WHERE ai_summary IS NULL) as docs_pending,
+        (SELECT COUNT(*)::int FROM documents d 
+         WHERE d.ai_summary IS NOT NULL AND d.ai_summary != ''
+         AND NOT EXISTS (SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id)
+        ) as docs_linking_pending,
+        (SELECT COUNT(*)::int FROM events WHERE ai_summary IS NULL) as events_pending
     `;
 
     // Get backfill queue status (if table exists)
@@ -94,16 +115,23 @@ async function getStats() {
         total: docStats[0]?.total || 0,
         downloaded: docStats[0]?.downloaded || 0,
         unlinked: docStats[0]?.unlinked || 0,
+        withSummaries: docStats[0]?.with_summaries || 0,
       },
       backfill: backfillStatus,
+      aiQueue: {
+        docsPending: aiQueueStats[0]?.docs_pending || 0,
+        docsLinkingPending: aiQueueStats[0]?.docs_linking_pending || 0,
+        eventsPending: aiQueueStats[0]?.events_pending || 0,
+      },
     };
   } catch (error) {
     console.error('Failed to fetch stats:', error);
     return {
       sources: { total: 0, active: 0, healthy: 0, failing: 0 },
       events: { total: 0, withSummaries: 0 },
-      documents: { total: 0, downloaded: 0, unlinked: 0 },
+      documents: { total: 0, downloaded: 0, unlinked: 0, withSummaries: 0 },
       backfill: { pending: 0, in_progress: 0, completed: 0, failed: 0 },
+      aiQueue: { docsPending: 0, docsLinkingPending: 0, eventsPending: 0 },
     };
   }
 }
@@ -183,6 +211,12 @@ export default async function AdminDashboard() {
       subtext: `${stats.backfill.completed} done, ${stats.backfill.failed} failed`,
       color: stats.backfill.in_progress > 0 ? 'text-blue-600' : 'text-gray-600'
     },
+    {
+      name: 'AI Analysis Queue',
+      value: (stats.aiQueue.docsPending + stats.aiQueue.docsLinkingPending + stats.aiQueue.eventsPending).toString(),
+      subtext: `${stats.aiQueue.docsPending} docs, ${stats.aiQueue.docsLinkingPending} linking, ${stats.aiQueue.eventsPending} events`,
+      color: stats.aiQueue.docsPending > 0 ? 'text-orange-600' : 'text-green-600'
+    },
   ];
 
   return (
@@ -257,7 +291,7 @@ export default async function AdminDashboard() {
         {/* Dashboard Content */}
         <div className="p-6 space-y-6">
           {/* Stats Grid */}
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
             {statCards.map((stat) => (
               <div key={stat.name} className="rounded-lg border bg-card p-6">
                 <p className="text-sm font-medium text-muted-foreground">{stat.name}</p>
@@ -333,10 +367,48 @@ export default async function AdminDashboard() {
             )}
           </div>
 
+          {/* AI Analysis Queue Status */}
+          <div className="rounded-lg border bg-card p-6">
+            <h2 className="font-semibold mb-4">AI Analysis Queue</h2>
+            <div className="grid grid-cols-3 gap-4 mb-6">
+              <div className="text-center p-3 rounded-lg bg-orange-50 dark:bg-orange-950">
+                <p className="text-2xl font-bold text-orange-600">{stats.aiQueue.docsPending}</p>
+                <p className="text-xs text-muted-foreground">Documents Pending Summary</p>
+              </div>
+              <div className="text-center p-3 rounded-lg bg-blue-50 dark:bg-blue-950">
+                <p className="text-2xl font-bold text-blue-600">{stats.aiQueue.docsLinkingPending}</p>
+                <p className="text-xs text-muted-foreground">Documents Pending Linking</p>
+              </div>
+              <div className="text-center p-3 rounded-lg bg-purple-50 dark:bg-purple-950">
+                <p className="text-2xl font-bold text-purple-600">{stats.aiQueue.eventsPending}</p>
+                <p className="text-xs text-muted-foreground">Events Pending Summary</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground text-center">
+              Queue processes every {AI_QUEUE_INTERVAL_SECONDS} seconds ({AI_QUEUE_BATCH_SIZE} item{AI_QUEUE_BATCH_SIZE !== 1 ? 's' : ''} per batch)
+            </p>
+          </div>
+
           {/* AI Summary Progress */}
           <div className="rounded-lg border bg-card p-6">
-            <h2 className="font-semibold mb-4">AI Summary Generation</h2>
+            <h2 className="font-semibold mb-4">AI Summary Progress</h2>
             <div className="space-y-4">
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>Documents with AI Summaries</span>
+                  <span>{stats.documents.withSummaries} / {stats.documents.total}</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-orange-500 rounded-full transition-all"
+                    style={{ 
+                      width: stats.documents.total > 0 
+                        ? `${(stats.documents.withSummaries / stats.documents.total) * 100}%` 
+                        : '0%' 
+                    }}
+                  />
+                </div>
+              </div>
               <div>
                 <div className="flex justify-between text-sm mb-1">
                   <span>Events with AI Summaries</span>
@@ -344,7 +416,7 @@ export default async function AdminDashboard() {
                 </div>
                 <div className="h-2 bg-muted rounded-full overflow-hidden">
                   <div 
-                    className="h-full bg-blue-500 rounded-full transition-all"
+                    className="h-full bg-purple-500 rounded-full transition-all"
                     style={{ 
                       width: stats.events.total > 0 
                         ? `${(stats.events.withSummaries / stats.events.total) * 100}%` 
@@ -360,7 +432,7 @@ export default async function AdminDashboard() {
                 </div>
                 <div className="h-2 bg-muted rounded-full overflow-hidden">
                   <div 
-                    className="h-full bg-purple-500 rounded-full transition-all"
+                    className="h-full bg-blue-500 rounded-full transition-all"
                     style={{ 
                       width: stats.documents.total > 0 
                         ? `${(stats.documents.downloaded / stats.documents.total) * 100}%` 

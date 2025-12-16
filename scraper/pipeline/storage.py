@@ -635,11 +635,14 @@ class DatabasePool:
         document_id: int,
         event_id: int,
         document: Document = None,
+        confidence: float = None,
     ) -> None:
         """
         Create a link between a document and an event.
         
         Determines the relationship type based on document type.
+        Also clears the event's AI summary so it will be regenerated
+        with the new document included.
         """
         # Determine relationship type from document type
         relationship = "attachment"  # default
@@ -664,6 +667,14 @@ class DatabasePool:
             event_id,
             document_id,
             relationship,
+        )
+        
+        # Clear the event's AI summary so it gets regenerated with new document
+        await conn.execute(
+            """
+            UPDATE events SET ai_summary = NULL WHERE id = $1
+            """,
+            event_id,
         )
 
     async def update_document_local_path(

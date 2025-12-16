@@ -55,7 +55,7 @@ async def get_upcoming_events(conn, days_ahead: int = 90, days_back: int = 365) 
 
 
 async def link_document_to_events(conn, document_id: int, matches: list[dict]) -> int:
-    """Create event_documents links for the matches."""
+    """Create event_documents links for the matches and clear event AI summaries."""
     linked = 0
     for match in matches:
         try:
@@ -64,6 +64,12 @@ async def link_document_to_events(conn, document_id: int, matches: list[dict]) -
                 VALUES ($1, $2, $3)
                 ON CONFLICT (event_id, document_id) DO NOTHING
             """, match['event_id'], document_id, match.get('relationship', 'attachment'))
+            
+            # Clear event AI summary so it gets regenerated with new document
+            await conn.execute("""
+                UPDATE events SET ai_summary = NULL WHERE id = $1
+            """, match['event_id'])
+            
             linked += 1
         except Exception as e:
             print(f"  Error linking to event {match['event_id']}: {e}")

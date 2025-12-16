@@ -49,7 +49,14 @@ class Worker:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.scheduler = AsyncIOScheduler()
+        # Configure scheduler with longer misfire grace time for async jobs
+        self.scheduler = AsyncIOScheduler(
+            job_defaults={
+                'coalesce': True,  # Combine multiple missed runs into one
+                'max_instances': 1,  # Only run one instance at a time
+                'misfire_grace_time': 300,  # Allow 5 min grace for missed jobs
+            }
+        )
         self.db_pool: DatabasePool | None = None
         self.ai_processor: Optional[AIEventProcessor] = None
         self.doc_summarizer: Optional[DocumentSummarizer] = None
@@ -181,6 +188,233 @@ class Worker:
                     replace_existing=True,
                 )
                 logger.info(f"Scheduled job: {job_id} ({source.schedule})")
+
+        # Schedule background AI analysis job using config values
+        if self.doc_summarizer and self.doc_summarizer.enabled:
+            interval = self.settings.ai_queue_interval_seconds
+            self.scheduler.add_job(
+                self.process_ai_analysis_queue,
+                trigger=CronTrigger(second=f"*/{interval}") if interval < 60 else CronTrigger(minute=f"*/{interval // 60}"),
+                id="ai_analysis_queue",
+                name="Process AI Analysis Queue",
+                replace_existing=True,
+            )
+            logger.info(f"Scheduled AI analysis queue processor (every {interval} seconds, {self.settings.ai_queue_batch_size} items per batch)")
+
+    async def process_ai_analysis_queue(self) -> None:
+        """
+        Process documents and events that need AI analysis.
+        
+        This handles three types of AI work:
+        1. Document summaries - documents with NULL ai_summary
+        2. Document-to-event linking - documents not yet linked to events
+        3. Event summaries - events with NULL ai_summary
+        
+        Runs as a background job separate from scraping.
+        Uses batch_size from settings.ai_queue_batch_size.
+        """
+        batch_size = self.settings.ai_queue_batch_size
+        logger.info("AI analysis queue: Starting processing run...")
+        
+        if not self.doc_summarizer or not self.doc_summarizer.enabled:
+            logger.debug("AI analysis queue: Summarizer not enabled, skipping")
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Phase 1: Link documents that already have summaries to events (PRIORITY)
+                await self._process_document_linking(conn, batch_size)
+                
+                # Phase 2: Generate event summaries for linked events
+                await self._process_event_summaries(conn, batch_size)
+                
+                # Phase 3: Generate document summaries for remaining docs
+                await self._process_document_summaries(conn, batch_size)
+                
+            logger.info("AI analysis queue: Processing run complete")
+                        
+        except Exception as e:
+            logger.error(f"AI analysis queue error: {e}")
+
+    async def _process_document_summaries(self, conn, batch_size: int) -> None:
+        """Generate AI summaries for documents that don't have them."""
+        docs = await conn.fetch("""
+            SELECT id, title, document_type, content_markdown, local_path
+            FROM documents
+            WHERE ai_summary IS NULL
+            ORDER BY 
+                CASE WHEN local_path IS NOT NULL THEN 0 ELSE 1 END,
+                created_at DESC
+            LIMIT $1
+        """, batch_size)
+        
+        if not docs:
+            logger.debug("AI analysis queue: No documents pending summaries")
+            return
+        
+        logger.info(f"AI analysis queue: Processing {len(docs)} document summaries")
+        
+        for doc in docs:
+            try:
+                summary = await self.doc_summarizer.generate_summary(
+                    title=doc["title"],
+                    document_type=doc["document_type"],
+                    content_text=doc["content_markdown"],
+                    local_path=doc["local_path"],
+                )
+                
+                if summary:
+                    await self.db_pool.update_document_ai_summary(
+                        conn,
+                        doc["id"],
+                        ai_summary=summary,
+                    )
+                    logger.info(f"AI summary generated for '{doc['title']}'")
+                else:
+                    # Mark as processed (empty summary) to avoid reprocessing
+                    await conn.execute("""
+                        UPDATE documents SET ai_summary = '' WHERE id = $1
+                    """, doc["id"])
+                    logger.debug(f"AI summary skipped for '{doc['title']}' (no content)")
+                    
+            except Exception as e:
+                logger.warning(f"AI analysis failed for '{doc['title']}': {e}")
+                # Don't mark as processed - will retry later
+
+    async def _process_document_linking(self, conn, batch_size: int) -> None:
+        """Link documents to events using AI analysis."""
+        if not self.ai_processor or not self.ai_processor.enabled:
+            return
+        
+        # Find documents that haven't been processed for linking yet
+        # Documents need summaries before they can be linked
+        docs = await conn.fetch("""
+            SELECT d.id, d.title, d.document_type, d.ai_summary, d.meeting_date, d.source_id
+            FROM documents d
+            LEFT JOIN event_documents ed ON d.id = ed.document_id
+            WHERE ed.document_id IS NULL
+              AND d.ai_summary IS NOT NULL
+              AND d.ai_summary != ''
+            ORDER BY d.meeting_date DESC NULLS LAST, d.created_at DESC
+            LIMIT $1
+        """, batch_size)
+        
+        if not docs:
+            logger.debug("AI analysis queue: No documents pending linking")
+            return
+        
+        logger.info(f"AI analysis queue: Linking {len(docs)} documents to events")
+        
+        for doc in docs:
+            try:
+                # Get events near the document's meeting date from the same source
+                meeting_date = doc["meeting_date"] or datetime.now()
+                events = await conn.fetch("""
+                    SELECT e.id, e.title, e.start_time, e.category
+                    FROM events e
+                    JOIN event_sources es ON e.id = es.event_id
+                    WHERE es.source_id = $1
+                      AND e.start_time BETWEEN ($2::timestamp - INTERVAL '7 days') AND ($2::timestamp + INTERVAL '7 days')
+                    ORDER BY e.start_time DESC
+                    LIMIT 20
+                """, doc["source_id"], meeting_date)
+                
+                logger.info(f"Processing doc '{doc['title']}' (source={doc['source_id']}, date={meeting_date}): found {len(events)} nearby events")
+                
+                if not events:
+                    # No events to link to - skip for now (will retry later)
+                    logger.info(f"No nearby events for '{doc['title']}' - will retry later")
+                    continue
+                
+                # First try: exact date match (most reliable for CivicPlus data)
+                exact_match = None
+                for e in events:
+                    event_date = e["start_time"].date() if e["start_time"] else None
+                    doc_date = meeting_date.date() if hasattr(meeting_date, 'date') else meeting_date
+                    logger.debug(f"  Comparing doc date {doc_date} with event '{e['title']}' date {event_date}")
+                    if event_date and event_date == doc_date:
+                        exact_match = e
+                        break
+                
+                if exact_match:
+                    # Direct link without AI - exact date match is highly reliable
+                    await self.db_pool.link_document_to_event(
+                        conn,
+                        doc["id"],
+                        exact_match["id"],
+                    )
+                    logger.info(f"Linked '{doc['title']}' to event '{exact_match['title']}' (exact date match)")
+                    continue
+                
+                # Second try: use AI to find best match from nearby events
+                events_context = [
+                    {
+                        "id": e["id"],
+                        "title": e["title"],
+                        "date": e["start_time"].isoformat() if e["start_time"] else None,
+                        "type": e["category"],
+                    }
+                    for e in events
+                ]
+                
+                matches = await self.ai_processor.find_related_events(
+                    document_title=doc["title"],
+                    document_type=doc["document_type"],
+                    document_summary=doc["ai_summary"],
+                    events=events_context,
+                )
+                
+                if matches:
+                    for match in matches:
+                        await self.db_pool.link_document_to_event(
+                            conn,
+                            doc["id"],
+                            match["event_id"],
+                            confidence=match.get("confidence", 0.5),
+                        )
+                        logger.info(f"Linked '{doc['title']}' to event {match['event_id']}")
+                else:
+                    # No AI matches - mark as processed with 'unlinked' relationship
+                    await conn.execute("""
+                        INSERT INTO event_documents (event_id, document_id, relationship)
+                        SELECT e.id, $1, 'unlinked'
+                        FROM events e
+                        JOIN event_sources es ON e.id = es.event_id
+                        WHERE es.source_id = $2
+                        LIMIT 1
+                        ON CONFLICT DO NOTHING
+                    """, doc["id"], doc["source_id"])
+                    
+            except Exception as e:
+                logger.warning(f"AI linking failed for '{doc['title']}': {e}")
+
+    async def _process_event_summaries(self, conn, batch_size: int) -> None:
+        """Generate AI summaries for events that have linked documents."""
+        # Find events that need summaries and have properly linked documents
+        events = await conn.fetch("""
+            SELECT DISTINCT e.id, e.title, e.start_time, e.category
+            FROM events e
+            JOIN event_documents ed ON e.id = ed.event_id
+            JOIN documents d ON ed.document_id = d.id
+            WHERE e.ai_summary IS NULL
+              AND d.ai_summary IS NOT NULL
+              AND d.ai_summary != ''
+              AND ed.relationship NOT IN ('none', 'unlinked')
+            ORDER BY e.start_time DESC
+            LIMIT $1
+        """, batch_size)
+        
+        if not events:
+            logger.debug("AI analysis queue: No events pending summaries")
+            return
+        
+        logger.info(f"AI analysis queue: Processing {len(events)} event summaries")
+        
+        for event in events:
+            try:
+                await self._generate_event_summary(conn, event["id"])
+            except Exception as e:
+                logger.warning(f"Event summary failed for '{event['title']}': {e}")
 
     async def scrape_source(
         self,
@@ -453,7 +687,8 @@ class Worker:
         source_name: str,
     ) -> None:
         """
-        Download a document, generate AI summary, and update the database.
+        Download a document and update the database.
+        AI analysis is handled separately by the background AI processor.
         
         Args:
             conn: Database connection
@@ -463,8 +698,6 @@ class Worker:
         """
         if not self.document_downloader:
             return
-        
-        local_path = None
         
         try:
             result = await self.document_downloader.download(
@@ -491,40 +724,13 @@ class Worker:
                 
         except Exception as e:
             logger.warning(f"Error downloading '{document.title}': {e}")
-        
-        # Generate AI summary for the document
-        if self.doc_summarizer and self.doc_summarizer.enabled:
-            try:
-                # Get document type
-                doc_type = None
-                if hasattr(document, 'doc_type') and document.doc_type:
-                    doc_type = document.doc_type.value if hasattr(document.doc_type, 'value') else str(document.doc_type)
-                
-                # Get content if available
-                content_text = None
-                if hasattr(document, 'content_markdown') and document.content_markdown:
-                    content_text = document.content_markdown
-                
-                summary = await self.doc_summarizer.generate_summary(
-                    title=document.title,
-                    document_type=doc_type,
-                    content_text=content_text,
-                    local_path=local_path,
-                )
-                
-                if summary:
-                    await self.db_pool.update_document_ai_summary(
-                        conn,
-                        doc_id,
-                        ai_summary=summary,
-                    )
-                    logger.info(f"Generated AI summary for document '{document.title}'")
-                    
-            except Exception as e:
-                logger.warning(f"Error generating AI summary for '{document.title}': {e}")
 
     async def _store_results(self, conn, source, events: list, documents: list) -> None:
-        """Store scraped results in database and download documents."""
+        """Store scraped results in database and download documents.
+        
+        AI analysis (summaries) is handled separately by the background
+        AI analysis queue processor for better performance.
+        """
         if not events and not documents:
             return
             
@@ -538,13 +744,10 @@ class Worker:
             schedule=source.schedule,
         )
         
-        # Track events with documents for summary generation
-        events_with_docs = set()
-        
-        # Store events (with optional AI enrichment)
+        # Store events (with optional AI enrichment for deduplication)
         for event in events:
             try:
-                # Optionally enrich with AI if configured
+                # Optionally enrich with AI if configured (quick normalization only)
                 if self.ai_processor and self.ai_processor.enabled:
                     event = await self._enrich_event_with_ai(event)
                 
@@ -561,9 +764,8 @@ class Worker:
                             conn, source_id, document, event_id=event_id
                         )
                         logger.debug(f"Linked document '{document.title}' (id={doc_id}) to event {event_id}")
-                        events_with_docs.add(event_id)
                         
-                        # Download the document
+                        # Download the document (AI analysis handled by queue)
                         await self._download_and_update_document(conn, document, doc_id, source.name)
                         
                     except Exception as e:
@@ -586,18 +788,12 @@ class Worker:
             except Exception as e:
                 logger.error(f"Failed to store document '{document.title}': {e}")
         
-        # Use AI to link standalone documents to existing events
-        if standalone_doc_ids and self.ai_processor and self.ai_processor.enabled:
-            await self._ai_link_documents_to_events(conn, standalone_doc_ids)
-        
-        # Generate AI summaries for events that have documents
-        if events_with_docs and self.ai_processor and self.ai_processor.enabled:
-            logger.info(f"Generating AI summaries for {len(events_with_docs)} events with documents...")
-            for event_id in events_with_docs:
-                await self._generate_event_summary(conn, event_id)
+        # Note: AI document linking and summaries are handled by the background
+        # AI analysis queue (process_ai_analysis_queue) for better performance
         
         # Update source health status
         await self.db_pool.update_source_health(conn, source_id, success=True)
+        logger.info(f"Completed storing results for {source.name}: {len(events)} events, {len(documents)} documents")
 
     async def _initialize_all_sources(self, configs: list) -> None:
         """
@@ -691,6 +887,11 @@ class Worker:
                     f"Backfill queue: {status['pending']} pending, "
                     f"{status['completed']} completed, {status['failed']} failed"
                 )
+
+        # Run AI analysis queue immediately after initial scrape
+        if self.doc_summarizer and self.doc_summarizer.enabled:
+            logger.info("Running initial AI analysis queue processing...")
+            await self.process_ai_analysis_queue(batch_size=50)  # Larger batch for initial run
 
         # Wait for shutdown signal
         await self._shutdown_event.wait()

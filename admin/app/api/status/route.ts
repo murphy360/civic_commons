@@ -31,6 +31,13 @@ interface Stats {
   events_with_summaries: number;
   total_documents: number;
   downloaded_documents: number;
+  documents_with_summaries: number;
+}
+
+interface AIQueueStatus {
+  docs_pending: number;
+  docs_linking_pending: number;
+  events_pending: number;
 }
 
 export async function GET() {
@@ -65,11 +72,28 @@ export async function GET() {
     const docStats = await sql<Array<{
       total: number;
       downloaded: number;
+      with_summaries: number;
     }>>`
       SELECT 
         COUNT(*)::int as total,
-        COUNT(*) FILTER (WHERE local_path IS NOT NULL)::int as downloaded
+        COUNT(*) FILTER (WHERE local_path IS NOT NULL)::int as downloaded,
+        COUNT(*) FILTER (WHERE ai_summary IS NOT NULL AND ai_summary != '')::int as with_summaries
       FROM documents
+    `;
+
+    // Get AI analysis queue status
+    const aiQueueStats = await sql<Array<{
+      docs_pending: number;
+      docs_linking_pending: number;
+      events_pending: number;
+    }>>`
+      SELECT
+        (SELECT COUNT(*)::int FROM documents WHERE ai_summary IS NULL) as docs_pending,
+        (SELECT COUNT(*)::int FROM documents d 
+         WHERE d.ai_summary IS NOT NULL AND d.ai_summary != ''
+         AND NOT EXISTS (SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id)
+        ) as docs_linking_pending,
+        (SELECT COUNT(*)::int FROM events WHERE ai_summary IS NULL) as events_pending
     `;
 
     // Get backfill queue status (if table exists)
@@ -143,11 +167,19 @@ export async function GET() {
       events_with_summaries: eventStats[0]?.with_summaries || 0,
       total_documents: docStats[0]?.total || 0,
       downloaded_documents: docStats[0]?.downloaded || 0,
+      documents_with_summaries: docStats[0]?.with_summaries || 0,
+    };
+
+    const aiQueue: AIQueueStatus = {
+      docs_pending: aiQueueStats[0]?.docs_pending || 0,
+      docs_linking_pending: aiQueueStats[0]?.docs_linking_pending || 0,
+      events_pending: aiQueueStats[0]?.events_pending || 0,
     };
 
     return NextResponse.json({
       stats,
       backfill: backfillStatus,
+      aiQueue,
       sources,
       recentActivity,
     });

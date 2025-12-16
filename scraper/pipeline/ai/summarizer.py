@@ -3,10 +3,18 @@ AI-powered event summary generation.
 
 This module generates concise, helpful summaries of civic events
 using all available information (event details, sources, documents).
+
+The summaries are designed for the "average citizen" - providing a 30-second
+readable overview that helps residents:
+- Quickly understand what happened or will happen
+- Identify topics of personal interest worth digging into
+- Know if any actions affect them (deadlines, changes, decisions)
 """
 
 import logging
+import re
 from typing import Optional
+from collections import defaultdict
 
 from .client import GeminiClient
 from .pdf_extractor import extract_pdf_text
@@ -14,48 +22,60 @@ from .pdf_extractor import extract_pdf_text
 logger = logging.getLogger("civic.ai.summarizer")
 
 
-# System prompt for meeting summaries
-MEETING_SYSTEM_PROMPT = """You are a civic information assistant helping residents understand local government meetings.
+# System prompt for meeting summaries - citizen-focused, substance-first
+MEETING_SYSTEM_PROMPT = """You are extracting KEY SUBSTANCE from government meeting documents for busy residents.
 
-Your job is to create a concise, helpful summary of a government meeting based on available documents.
+DO NOT write marketing fluff. DO NOT repeat date/time/location. DO NOT invite participation.
 
-FOCUS ON:
-- Non-routine agenda items (skip standard approvals like minutes approval, roll call)
-- Key decisions, votes, or discussions
-- Public hearing items
-- New business or special presentations
-- Items that directly affect residents
+YOUR JOB: Extract ACTUAL CONTENT that matters to residents.
 
-SKIP or briefly mention:
-- Routine procedural items (call to order, roll call, adjournment)
-- Standard consent agenda items unless notable
-- Minutes approval from previous meetings
+FOR EACH ORDINANCE/RESOLUTION YOU MENTION:
+- Include the number (e.g., "Ord. 115-2025")
+- ALWAYS explain what it does in plain language (REQUIRED - never list numbers without descriptions)
+- Note which reading (1st, 2nd, 3rd/final)
+- Vote result if available ("Passed 5-2", "Tabled", etc.)
 
-FORMAT:
-- Start with a one-sentence overview
-- Use bullet points for key items
-- Keep it under 200 words
-- Be factual and neutral
-- If agenda only, say "Scheduled to discuss:" 
-- If minutes available, say "Discussed:" or "Decided:" """
+BAD: "Ordinances 115-2025 through 118-2025 discussed" (no descriptions!)
+GOOD: "Ord. 115-2025 (2026 budget appropriations), Ord. 116-2025 (new cybersecurity policy), Ord. 117-2025 (employee wage increase), Ord. 118-2025 (council rules: clothing allowance & lifetime fitness memberships for outgoing officials)"
 
+OTHER PRIORITY ITEMS:
+- Money/contracts over $10K with dollar amounts
+- Zoning changes with addresses
+- Items tabled or referred to committee
+- Deadlines residents need to know
 
-# System prompt for community event summaries
-COMMUNITY_EVENT_SYSTEM_PROMPT = """You are a civic information assistant helping residents learn about community events.
-
-Your job is to create a helpful, engaging summary of a community event.
-
-INCLUDE:
-- What the event is about
-- Who it's for (families, seniors, all ages, etc.)
-- Key details like registration requirements or things to bring
-- Why someone might want to attend
+IF AMENDMENTS EXIST:
+When original and amended versions of a document are provided, specifically note what was ADDED or CHANGED. Don't say "check the website" - we have both versions, so describe the differences.
 
 FORMAT:
-- Start with an engaging one-sentence hook
-- Include practical details
-- Keep it under 150 words
-- Be warm and inviting but factual"""
+- Lead with most significant items
+- Bullet list of ordinances/resolutions with descriptions
+- 100-200 words
+- Skip routine procedural items (roll call, minutes approval)
+
+If only procedural items, say:
+"Routine meeting - approved previous minutes, no major ordinances or votes."
+
+NO fluff. NO engagement language."""
+
+
+# System prompt for community event summaries - brief and practical
+COMMUNITY_EVENT_SYSTEM_PROMPT = """Extract the key details of this community event. Be brief and practical.
+
+DO NOT write marketing fluff. DO NOT say "Want to..." or "Join us for..."
+
+GOOD: "Free outdoor concert featuring local jazz bands. Bring lawn chairs. Food trucks on site. Kids welcome."
+
+BAD: "Looking for something fun to do? Join us for an exciting evening of music and community!"
+
+INCLUDE ONLY:
+- What it is (1 sentence)
+- Who it's for (families, seniors, all ages)
+- Cost (free or $X)
+- What to bring/know
+- Registration required? 
+
+FORMAT: 2-4 short sentences or bullets. Under 75 words."""
 
 
 class EventSummarizer:
@@ -90,7 +110,8 @@ class EventSummarizer:
         """
         Generate an AI overview/summary of an event using all available information.
         
-        For meetings with agendas/minutes, focuses on non-routine items.
+        For meetings with agendas/minutes, focuses on non-routine items and
+        highlights any amendments/changes between document versions.
         For community events, provides a helpful overview.
         
         Args:
@@ -109,9 +130,9 @@ class EventSummarizer:
         # Determine if this is a meeting (has agenda/minutes)
         is_meeting = self._is_meeting(documents)
         
-        # Build context
+        # Build context (now returns tuple with amendments note)
         source_info = self._build_source_info(sources)
-        doc_content = await self._build_document_content(documents)
+        doc_content, amendments_note = await self._build_document_content(documents)
         
         # Choose appropriate system prompt
         system_prompt = (
@@ -119,8 +140,8 @@ class EventSummarizer:
             else COMMUNITY_EVENT_SYSTEM_PROMPT
         )
         
-        # Build the prompt
-        prompt = self._build_prompt(event, source_info, doc_content)
+        # Build the prompt (now includes amendments note and documents for source attribution)
+        prompt = self._build_prompt(event, source_info, doc_content, amendments_note, documents)
         
         response = await self._client.generate(prompt, system_prompt)
         
@@ -155,14 +176,25 @@ class EventSummarizer:
             source_info.append(info)
         return source_info
     
-    async def _build_document_content(self, documents: list[dict]) -> list[str]:
+    async def _build_document_content(self, documents: list[dict]) -> tuple[list[str], str]:
         """
         Build document content strings for event summary.
         
         Prioritizes pre-generated AI summaries over raw content to avoid
         repeated PDF parsing and summarization.
+        
+        Also identifies document versions (original vs amended) and prepares
+        a comparison note if multiple versions exist.
+        
+        Returns:
+            Tuple of (doc_content list, amendments_note string)
         """
         doc_content = []
+        
+        # Group documents by type and base title to identify versions
+        doc_groups = self._group_document_versions(documents)
+        amendments_note = self._build_amendments_note(doc_groups, documents)
+        
         for doc in documents:
             doc_info = (
                 f"### {doc.get('title', 'Untitled')} "
@@ -187,33 +219,116 @@ class EventSummarizer:
                 doc_info += f"\n{content[:max_chars]}"
             
             doc_content.append(doc_info)
-        return doc_content
+        
+        return doc_content, amendments_note
+    
+    def _group_document_versions(self, documents: list[dict]) -> dict:
+        """
+        Group documents by their base type to identify original vs amended versions.
+        
+        Documents with the same relationship type (agenda, minutes) for the same
+        event may represent different versions if there are multiple.
+        
+        Returns:
+            Dict mapping relationship type to list of documents of that type
+        """
+        groups = defaultdict(list)
+        for doc in documents:
+            rel = doc.get('relationship', 'related')
+            groups[rel].append(doc)
+        return dict(groups)
+    
+    def _build_amendments_note(self, doc_groups: dict, documents: list[dict]) -> str:
+        """
+        Build a detailed note about document amendments/versions if multiple exist.
+        
+        Compares content between original and amended versions to identify changes.
+        
+        Args:
+            doc_groups: Dict mapping relationship type to list of documents
+            documents: Full list of documents with content
+        
+        Returns:
+            String with amendment details, or empty string if no amendments
+        """
+        notes = []
+        
+        for rel_type, docs in doc_groups.items():
+            if len(docs) > 1:
+                # Multiple documents of same type = versions
+                # Sort by title to get original vs amended order
+                sorted_docs = sorted(docs, key=lambda d: 'amend' in d.get('title', '').lower())
+                
+                original = sorted_docs[0]
+                amended_list = sorted_docs[1:]
+                
+                type_name = rel_type.replace('_', ' ').title()
+                
+                # Build comparison info
+                orig_title = original.get('title', 'Original')
+                orig_content = original.get('ai_summary') or original.get('content_text') or ''
+                
+                for amended in amended_list:
+                    amend_title = amended.get('title', 'Amended')
+                    amend_content = amended.get('ai_summary') or amended.get('content_text') or ''
+                    
+                    note = f"DOCUMENT VERSIONS ({type_name}):\n"
+                    note += f"- Original: {orig_title}\n"
+                    note += f"- Amended: {amend_title}\n"
+                    
+                    # Include both contents for AI to compare
+                    if orig_content and amend_content:
+                        note += f"\nORIGINAL CONTENT:\n{orig_content[:1500]}\n"
+                        note += f"\nAMENDED CONTENT:\n{amend_content[:1500]}\n"
+                        note += "\nCompare these and note what was ADDED, REMOVED, or CHANGED."
+                    
+                    notes.append(note)
+        
+        return "\n\n".join(notes) if notes else ""
     
     def _build_prompt(
         self,
         event: dict,
         source_info: list[str],
         doc_content: list[str],
+        amendments_note: str = "",
+        documents: list[dict] = None,
     ) -> str:
-        """Build the summary generation prompt."""
+        """Build the summary generation prompt with citizen-focused framing."""
         description = event.get('description') or 'No description available'
-        return f"""Create a summary for this event:
+        
+        # Build the amendments section if there are any
+        amendments_section = ""
+        if amendments_note:
+            amendments_section = f"""
+⚠️ DOCUMENT AMENDMENTS - COMPARE AND DESCRIBE CHANGES:
+{amendments_note}
+"""
+        
+        # Build document source list for attribution
+        doc_list = ""
+        if documents:
+            doc_titles = [d.get('title', 'Untitled') for d in documents if d.get('title')]
+            if doc_titles:
+                doc_list = "\n\nDOCUMENTS USED: " + ", ".join(doc_titles)
+        
+        return f"""Extract key substance from this government meeting:
 
 **{event.get('title', 'Untitled Event')}**
-- Date: {event.get('start_time', 'TBD')}
-- Location: {event.get('location', 'Not specified')}
-- Category: {event.get('category', 'General')}
 
 Original Description:
 {description[:500]}
-
-Sources:
-{chr(10).join(source_info) if source_info else 'No additional source information'}
-
-Documents:
+{amendments_section}
+Document Content:
 {chr(10).join(doc_content) if doc_content else 'No documents available'}
 
-Generate a concise, helpful summary:"""
+REQUIREMENTS:
+1. For EVERY ordinance/resolution mentioned, include its number AND what it does
+2. If amendments exist above, describe what changed between versions
+3. Include vote results if available
+4. End with: "Sources: [list document titles used]"
+
+Generate summary:"""
     
     def _clean_response(self, response: str) -> str:
         """Clean up the AI response."""

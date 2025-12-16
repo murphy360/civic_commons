@@ -16,47 +16,52 @@ logger = logging.getLogger("civic.ai.doc_summarizer")
 
 
 # System prompt for meeting documents (agendas, minutes, packets)
-MEETING_DOC_SYSTEM_PROMPT = """You are a civic information assistant summarizing government documents.
+MEETING_DOC_SYSTEM_PROMPT = """You are extracting KEY SUBSTANCE from government meeting documents.
 
-Your job is to create a concise, helpful summary of this document.
+DO NOT write fluffy introductions. Get straight to the content.
 
-For AGENDAS, focus on:
-- Non-routine items (skip standard items like roll call, minutes approval)
-- Public hearings
-- New business items
-- Items that directly affect residents
-- Key decisions to be made
+For AGENDAS, extract:
+1. ORDINANCES - List each with:
+   - Number (e.g., "Ord. 2025-42")
+   - What it does in plain language
+   - Which reading (1st, 2nd, 3rd/final)
+   
+2. RESOLUTIONS - Same format as ordinances
 
-For MINUTES, focus on:
-- Key decisions and votes
-- Notable discussions
-- Public comments received
-- Action items or follow-ups
+3. PUBLIC HEARINGS - What they're about, addresses if zoning-related
 
-FORMAT:
-- Start with document type and meeting info
-- Use bullet points for key items
-- Keep it under 200 words
-- Be factual and neutral
-- Highlight anything unusual or significant"""
+4. NEW BUSINESS - Specific items, not "various matters"
+
+5. MONEY ITEMS - Dollar amounts, contracts, budget items
+
+For MINUTES, extract:
+1. VOTES - What passed/failed, vote counts (e.g., "5-2"), who dissented
+2. Final readings that passed
+3. Items tabled or continued
+4. Key discussion points with specifics
+
+SKIP: Roll call, minutes approval, adjournment, pledge, routine procedural items
+
+FORMAT EXAMPLE:
+"City Council Agenda - Dec 9, 2025
+• Ord. 2025-42 (3rd reading): 3% water rate increase effective Jan 1
+• Ord. 2025-45 (1st reading): Rezone 123 Oak St from R-1 to Mixed Use  
+• Resolution 2025-18: Approve $85K contract for Elm Ave sidewalks
+• Public Hearing: Proposed dog park at Memorial Field"
+
+Keep under 200 words. Be specific with numbers, addresses, amounts."""
 
 
 # System prompt for general documents (flyers, guides, forms)
-GENERAL_DOC_SYSTEM_PROMPT = """You are a civic information assistant summarizing community documents.
+GENERAL_DOC_SYSTEM_PROMPT = """Summarize this government document with SPECIFIC details.
 
-Your job is to create a helpful summary of this document.
+EXTRACT:
+- What it's about (one sentence)
+- Key dates, deadlines, requirements
+- Dollar amounts, fees, costs if mentioned
+- Who is affected and how
 
-INCLUDE:
-- What the document is about
-- Key information residents need to know
-- Important dates, deadlines, or requirements
-- Who this is relevant for
-
-FORMAT:
-- Start with a clear one-sentence description
-- Include key details in bullet points
-- Keep it under 150 words
-- Be helpful and clear"""
+NO fluff. Get to the point. Under 150 words."""
 
 
 class DocumentSummarizer:
@@ -168,14 +173,13 @@ class DocumentSummarizer:
         """Build the summarization prompt."""
         type_info = f" (Type: {document_type})" if document_type else ""
         
-        return f"""Summarize this document:
+        return f"""Document: **{title}**{type_info}
 
-**{title}**{type_info}
-
-Document Content:
+CONTENT:
 {content}
 
-Generate a concise, helpful summary:"""
+---
+Extract the KEY SUBSTANCE following the system instructions. No intro, just facts:"""
     
     def _clean_response(self, response: str) -> str:
         """Clean up the AI response."""

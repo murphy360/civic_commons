@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # Behavior
     run_on_startup: bool = False
     log_level: str = "INFO"
+    
+    # AI Queue Processing Configuration
+    ai_queue_interval_seconds: int = 30  # How often the queue runs
+    ai_queue_batch_size: int = 1  # Items processed per run
 
     def get_database_url(self) -> str:
         """Get database URL - use DATABASE_URL if set, otherwise construct from parts."""

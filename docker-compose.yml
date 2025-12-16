@@ -58,6 +58,8 @@ services:
       SCRAPER_INTERVAL: ${SCRAPER_INTERVAL:-3600}
       RUN_ON_STARTUP: ${RUN_ON_STARTUP:-false}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_QUEUE_INTERVAL_SECONDS: ${AI_QUEUE_INTERVAL_SECONDS:-30}
+      AI_QUEUE_BATCH_SIZE: ${AI_QUEUE_BATCH_SIZE:-1}
     volumes:
       - ./configs:/app/configs:ro
       - scraper_data:/data
@@ -131,6 +133,8 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET is required}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      AI_QUEUE_INTERVAL_SECONDS: ${AI_QUEUE_INTERVAL_SECONDS:-30}
+      AI_QUEUE_BATCH_SIZE: ${AI_QUEUE_BATCH_SIZE:-1}
     networks:
       - civic_network
 
