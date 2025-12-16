@@ -154,6 +154,9 @@ class Worker:
         Args:
             configs: List of loaded city configurations
         """
+        # Store configs for manual trigger lookup
+        self._configs = configs
+        
         for config in configs:
             city_name = config.city_profile.name
             
@@ -200,6 +203,77 @@ class Worker:
                 replace_existing=True,
             )
             logger.info(f"Scheduled AI analysis queue processor (every {interval} seconds, {self.settings.ai_queue_batch_size} items per batch)")
+
+        # Schedule manual trigger checker (every 15 seconds)
+        self.scheduler.add_job(
+            self.process_manual_triggers,
+            trigger=CronTrigger(second="*/15"),
+            id="manual_trigger_checker",
+            name="Check Manual Scrape Triggers",
+            replace_existing=True,
+        )
+        logger.info("Scheduled manual trigger checker (every 15 seconds)")
+
+    async def process_manual_triggers(self) -> None:
+        """
+        Check for and process manually triggered scrapes from the admin UI.
+        
+        Looks for sources where trigger_requested_at > last_fetched_at.
+        """
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Find sources that need to be triggered
+                triggered = await conn.fetch("""
+                    SELECT id, name, driver_type, config, city_id
+                    FROM sources
+                    WHERE is_enabled = true
+                      AND trigger_requested_at IS NOT NULL
+                      AND (last_fetched_at IS NULL OR trigger_requested_at > last_fetched_at)
+                """)
+                
+                if not triggered:
+                    return
+                
+                logger.info(f"Manual trigger: Found {len(triggered)} sources to scrape")
+                
+                for row in triggered:
+                    source_name = row['name']
+                    city_id = row['city_id']
+                    
+                    # Find matching config
+                    matching_config = None
+                    matching_source = None
+                    
+                    for config in self._configs:
+                        # Normalize city name for comparison
+                        config_city_id = config.city_profile.name.lower().replace(' ', '_').replace(',', '')
+                        db_city_id = city_id.lower().replace(' ', '_').replace(',', '')
+                        
+                        if config_city_id == db_city_id or db_city_id.startswith(config_city_id.split('_')[0]):
+                            for source in config.sources:
+                                if source.name == source_name:
+                                    matching_config = config
+                                    matching_source = source
+                                    break
+                        if matching_config:
+                            break
+                    
+                    if matching_config and matching_source:
+                        logger.info(f"Manual trigger: Running scrape for {source_name}")
+                        try:
+                            await self.scrape_source(matching_config, matching_source)
+                        except Exception as e:
+                            logger.error(f"Manual trigger: Error scraping {source_name}: {e}")
+                    else:
+                        logger.warning(f"Manual trigger: Could not find config for {source_name} (city: {city_id})")
+                        # Clear the trigger anyway to avoid repeated attempts
+                        await conn.execute(
+                            "UPDATE sources SET trigger_requested_at = NULL WHERE id = $1",
+                            row['id']
+                        )
+                        
+        except Exception as e:
+            logger.error(f"Manual trigger check error: {e}")
 
     async def process_ai_analysis_queue(self) -> None:
         """
@@ -325,17 +399,34 @@ class Worker:
         
         for doc in docs:
             try:
-                # Get events near the document's meeting date from the same source
+                # Get events near the document's meeting date
                 meeting_date = doc["meeting_date"] or datetime.now()
-                events = await conn.fetch("""
-                    SELECT e.id, e.title, e.start_time, e.category
-                    FROM events e
-                    JOIN event_sources es ON e.id = es.event_id
-                    WHERE es.source_id = $1
-                      AND e.start_time BETWEEN ($2::timestamp - INTERVAL '7 days') AND ($2::timestamp + INTERVAL '7 days')
-                    ORDER BY e.start_time DESC
-                    LIMIT 20
-                """, doc["source_id"], meeting_date)
+                
+                # For videos, search across ALL sources in the same city (since videos are from YouTube, not agenda center)
+                # For other documents, search within the same source only
+                if doc["document_type"] == "video":
+                    # Get the city_id for this source, then find events from any source in that city
+                    events = await conn.fetch("""
+                        SELECT DISTINCT e.id, e.title, e.start_time, e.category
+                        FROM events e
+                        JOIN event_sources es ON e.id = es.event_id
+                        JOIN sources s ON es.source_id = s.id
+                        WHERE s.city_id = (SELECT city_id FROM sources WHERE id = $1)
+                          AND e.start_time BETWEEN ($2::timestamp - INTERVAL '7 days') AND ($2::timestamp + INTERVAL '7 days')
+                        ORDER BY e.start_time DESC
+                        LIMIT 20
+                    """, doc["source_id"], meeting_date)
+                else:
+                    # For non-video docs, search within the same source
+                    events = await conn.fetch("""
+                        SELECT e.id, e.title, e.start_time, e.category
+                        FROM events e
+                        JOIN event_sources es ON e.id = es.event_id
+                        WHERE es.source_id = $1
+                          AND e.start_time BETWEEN ($2::timestamp - INTERVAL '7 days') AND ($2::timestamp + INTERVAL '7 days')
+                        ORDER BY e.start_time DESC
+                        LIMIT 20
+                    """, doc["source_id"], meeting_date)
                 
                 logger.info(f"Processing doc '{doc['title']}' (source={doc['source_id']}, date={meeting_date}): found {len(events)} nearby events")
                 

@@ -41,12 +41,24 @@ CREATE TABLE IF NOT EXISTS sources (
     last_success_at TIMESTAMP,
     last_error TEXT,
     consecutive_failures INTEGER DEFAULT 0 NOT NULL,
+    trigger_requested_at TIMESTAMP,    -- Set by admin to request manual scrape
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS sources_city_id_idx ON sources(city_id);
 CREATE INDEX IF NOT EXISTS sources_source_type_idx ON sources(source_type);
+
+-- Migration: Add trigger_requested_at if it doesn't exist (for existing databases)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'sources' AND column_name = 'trigger_requested_at'
+    ) THEN
+        ALTER TABLE sources ADD COLUMN trigger_requested_at TIMESTAMP;
+    END IF;
+END $$;
 
 -- =============================================================================
 -- Events (canonical event data - deduplicated across sources)

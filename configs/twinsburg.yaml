@@ -344,6 +344,21 @@ sources:
       delay_seconds: 2
       max_concurrent: 1
 
+  # PROVIDES: City meeting recordings directly from YouTube
+  # DATA: Full video recordings of city council, commissions, committees
+  # UNIQUE: Direct access to meeting videos with AI summarization
+  # NOTES: Videos are analyzed by Gemini for public comments, debates, tone
+  - name: "City YouTube Channel"
+    driver: "youtube_channel"
+    enabled: true
+    schedule: "0 9 * * *"
+    params:
+      channel_url: "https://www.youtube.com/@CityofTwinsburg/videos"
+      max_videos: 100
+    rate_limit:
+      delay_seconds: 3
+      max_concurrent: 1
+
   # ===========================================================================
   # DISABLED: Regional Parks (technical limitations)
   # ===========================================================================

@@ -1,5 +1,6 @@
 import { sql } from '@/lib/db';
 import Link from 'next/link';
+import SourceStatusTable from './components/SourceStatusTable';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +18,7 @@ interface SourceStatus {
   last_success_at: Date | null;
   last_error: string | null;
   consecutive_failures: number;
+  trigger_requested_at: Date | null;
 }
 
 async function getStats() {
@@ -148,7 +150,8 @@ async function getSources(): Promise<SourceStatus[]> {
     return await sql<SourceStatus[]>`
       SELECT 
         id, name, city_id, source_type, is_enabled,
-        last_fetched_at, last_success_at, last_error, consecutive_failures
+        last_fetched_at, last_success_at, last_error, consecutive_failures,
+        trigger_requested_at
       FROM sources
       ORDER BY 
         consecutive_failures DESC,
@@ -158,35 +161,6 @@ async function getSources(): Promise<SourceStatus[]> {
     console.error('Failed to fetch sources:', error);
     return [];
   }
-}
-
-function formatTimeAgo(date: Date | null): string {
-  if (!date) return 'Never';
-  const now = new Date();
-  const then = new Date(date);
-  const diffMs = now.getTime() - then.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-  
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins} min ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-  return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-}
-
-function getStatusColor(source: SourceStatus): string {
-  if (!source.is_enabled) return 'bg-gray-400';
-  if (source.consecutive_failures > 0) return 'bg-red-500';
-  if (source.last_success_at) return 'bg-green-500';
-  return 'bg-yellow-500';
-}
-
-function getStatusText(source: SourceStatus): string {
-  if (!source.is_enabled) return 'Disabled';
-  if (source.consecutive_failures > 0) return `Failed (${source.consecutive_failures}x)`;
-  if (source.last_success_at) return 'Healthy';
-  return 'Pending';
 }
 
 export default async function AdminDashboard() {
@@ -310,69 +284,13 @@ export default async function AdminDashboard() {
             ))}
           </div>
 
-          {/* Source Status Table */}
-          <div className="rounded-lg border bg-card">
-            <div className="flex items-center justify-between border-b p-4">
-              <h2 className="font-semibold">Source Status</h2>
-              <span className="text-sm text-muted-foreground">
-                {sources.length} source{sources.length !== 1 ? 's' : ''}
-              </span>
-            </div>
-            {sources.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">
-                No sources configured yet. The worker will create sources on first scrape.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b bg-muted/50">
-                      <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
-                      <th className="px-4 py-3 text-left text-sm font-medium">Source</th>
-                      <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
-                      <th className="px-4 py-3 text-left text-sm font-medium">Last Fetched</th>
-                      <th className="px-4 py-3 text-left text-sm font-medium">Last Success</th>
-                      <th className="px-4 py-3 text-left text-sm font-medium">Error</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {sources.map((source) => (
-                      <tr key={source.id} className="hover:bg-muted/50">
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className={`h-2.5 w-2.5 rounded-full ${getStatusColor(source)}`} />
-                            <span className="text-sm">{getStatusText(source)}</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div>
-                            <p className="font-medium">{source.name}</p>
-                            <p className="text-sm text-muted-foreground">{source.city_id}</p>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm">{source.source_type}</td>
-                        <td className="px-4 py-3 text-sm text-muted-foreground">
-                          {formatTimeAgo(source.last_fetched_at)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-muted-foreground">
-                          {formatTimeAgo(source.last_success_at)}
-                        </td>
-                        <td className="px-4 py-3 text-sm">
-                          {source.last_error ? (
-                            <span className="text-red-600 truncate max-w-xs block" title={source.last_error}>
-                              {source.last_error.substring(0, 50)}...
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          {/* Source Status Table with Trigger Actions */}
+          <SourceStatusTable initialSources={sources.map(s => ({
+            ...s,
+            last_fetched_at: s.last_fetched_at?.toISOString() ?? null,
+            last_success_at: s.last_success_at?.toISOString() ?? null,
+            trigger_requested_at: s.trigger_requested_at?.toISOString() ?? null,
+          }))} />
 
           {/* AI Analysis Queue Status */}
           <div className="rounded-lg border bg-card p-6">
