@@ -17,6 +17,7 @@ from .rss import RssDriver
 from .libcal import LibCalDriver
 from .icalendar_driver import ICalendarDriver
 from .youtube_channel import YouTubeChannelDriver
+from .tcsd_agendas import TCSDagendasDriver
 
 # Driver registry: maps driver name to class
 DRIVER_REGISTRY: dict[str, Type[BaseDriver]] = {
@@ -29,6 +30,7 @@ DRIVER_REGISTRY: dict[str, Type[BaseDriver]] = {
     "libcal": LibCalDriver,
     "icalendar": ICalendarDriver,
     "youtube_channel": YouTubeChannelDriver,
+    "tcsd_agendas": TCSDagendasDriver,
     # Add new drivers here
     # "civic_rec": CivicRecDriver,
     # "metroparks": MetroparksDriver,

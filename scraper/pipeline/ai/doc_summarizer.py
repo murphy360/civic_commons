@@ -6,6 +6,7 @@ flyers, etc.) during download. These summaries are stored in the database
 and reused for event summaries to avoid repeated processing.
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -281,6 +282,125 @@ CONTENT:
 ---
 Extract the KEY SUBSTANCE following the system instructions. No intro, just facts:"""
     
+    async def extract_legislation(
+        self,
+        title: str,
+        document_type: Optional[str] = None,
+        content_text: Optional[str] = None,
+        local_path: Optional[str] = None,
+        max_content_chars: int = 5000,
+    ) -> Optional[list[dict]]:
+        """
+        Extract legislation mentions from a document.
+        
+        Returns a list of legislation mentions with details.
+        
+        Args:
+            title: Document title
+            document_type: Type hint (agenda, minutes, etc.)
+            content_text: Pre-extracted text content
+            local_path: Path to local file for PDF extraction if no content
+            max_content_chars: Maximum characters to send to AI
+            
+        Returns:
+            List of legislation dictionaries or None on failure
+        """
+        if not self.enabled:
+            logger.debug("AI not enabled - skipping legislation extraction")
+            return None
+        
+        # Get content for text-based documents
+        content = content_text
+        if not content and local_path:
+            content = await extract_pdf_text(local_path, max_pages=10)
+        
+        if not content:
+            logger.debug(f"No content available for legislation extraction from '{title}'")
+            return None
+        
+        # Truncate content
+        content = content[:max_content_chars]
+        
+        prompt = f"""Document: **{title}**
+
+CONTENT:
+{content}
+
+---
+Extract ALL LEGISLATION MENTIONS from this document. For each one, provide:
+
+1. TYPE: ordinance | resolution | motion | bylaw | proclamation
+2. NUMBER: The legislation identifier (e.g., "2025-139", "R-2025-12")
+3. TITLE: Full name/title if available
+4. ACTION: What happened to it - introduced | first_reading | second_reading | third_reading | public_hearing | amended | tabled | referred | approved | failed | vetoed | withdrawn | discussed
+5. VOTE_RESULT: If voted on - passed | failed | tabled | unanimous (leave blank if not voted)
+6. VOTE_DETAILS: If voted, the breakdown like "5 yes, 2 no, 1 abstain" (leave blank if not voted)
+7. EXCERPT: The relevant sentence/paragraph from the document mentioning this
+
+Format as JSON array. If no legislation found, return empty array [].
+
+Example:
+```json
+[
+  {{
+    "type": "ordinance",
+    "number": "2025-139",
+    "title": "3% Water Rate Increase",
+    "action": "approved",
+    "vote_result": "passed",
+    "vote_details": "5 yes, 0 no, 0 abstain",
+    "excerpt": "Ordinance 2025-139 establishing a 3% water rate increase effective January 1, 2026 was approved unanimously."
+  }},
+  {{
+    "type": "resolution",
+    "number": "2025-18",
+    "title": "Approve $85K Elm Ave Sidewalk Contract",
+    "action": "first_reading",
+    "vote_result": null,
+    "vote_details": null,
+    "excerpt": "Resolution 2025-18 was introduced for approval of the $85,000 contract for Elm Avenue sidewalk repairs."
+  }}
+]
+```
+
+RETURN ONLY THE JSON ARRAY, no other text."""
+
+        system_prompt = """You are extracting legislation mentions from government meeting documents.
+Return valid JSON only. No explanations, no markdown formatting."""
+
+        response = await self._client.generate(prompt, system_prompt)
+        
+        if not response:
+            return None
+        
+        try:
+            # Parse JSON response
+            response_text = response.strip()
+            
+            # Remove markdown code blocks if present
+            if response_text.startswith("```"):
+                parts = response_text.split("```")
+                if len(parts) >= 2:
+                    response_text = parts[1]
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:].lstrip()
+            
+            legislation_list = json.loads(response_text)
+            
+            if not isinstance(legislation_list, list):
+                logger.warning(f"Legislation extraction returned non-list: {type(legislation_list)}")
+                return None
+            
+            logger.info(
+                f"Extracted {len(legislation_list)} legislation mentions from '{title}'"
+            )
+            return legislation_list
+        
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse legislation JSON from '{title}': {e}")
+            logger.debug(f"Raw response: {response[:200]}")
+            return None
+
     def _clean_response(self, response: str) -> str:
         """Clean up the AI response."""
         summary = response.strip()
@@ -294,3 +414,4 @@ Extract the KEY SUBSTANCE following the system instructions. No intro, just fact
                     summary = summary.split("\n", 1)[1] if "\n" in summary else summary
         
         return summary.strip()
+

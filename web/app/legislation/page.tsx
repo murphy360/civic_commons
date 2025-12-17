@@ -155,10 +155,10 @@ export default async function LegislationPage() {
               Newsletters
             </Link>
             <Link
-              href="/search"
+              href="/discuss"
               className="transition-colors hover:text-foreground/80 text-foreground/60"
             >
-              Search
+              Discuss
             </Link>
           </nav>
         </div>

@@ -198,10 +198,10 @@ export default async function EventDetailPage({
               Documents
             </Link>
             <Link
-              href="/search"
+              href="/discuss"
               className="transition-colors hover:text-foreground/80 text-foreground/60"
             >
-              Search
+              Discuss
             </Link>
           </nav>
         </div>

@@ -57,30 +57,31 @@ class Database:
             List of event dictionaries
         """
         query = """
-            SELECT 
+            SELECT DISTINCT
                 e.id,
                 e.title,
                 e.description,
                 e.start_time,
                 e.end_time,
                 e.location,
-                e.source_url,
+                es.source_url,
                 s.name as source_name,
                 s.source_type
             FROM events e
-            JOIN sources s ON e.source_id = s.id
-            WHERE s.city_id = $1
-              AND e.start_time >= $2
-              AND e.start_time <= $3
+            LEFT JOIN event_sources es ON e.id = es.event_id
+            LEFT JOIN sources s ON es.source_id = s.id
+            WHERE e.start_time >= $1
+              AND e.start_time <= $2
         """
-        params: list[Any] = [city_id, start_date, end_date]
+        params: list[Any] = [start_date, end_date]
         
         if source_type:
-            query += " AND s.source_type = $4"
             params.append(source_type)
+            query += f" AND s.source_type = ${len(params)}"
         
-        query += " ORDER BY e.start_time ASC LIMIT $" + str(len(params) + 1)
+        query += " ORDER BY e.start_time ASC"
         params.append(limit)
+        query += f" LIMIT ${len(params)}"
         
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, *params)

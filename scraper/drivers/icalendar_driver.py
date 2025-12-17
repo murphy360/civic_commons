@@ -5,15 +5,19 @@ Consumed by: Worker for city calendars, meeting schedules
 Side effects: HTTP requests to iCalendar feed
 """
 
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional
 import re
 
 import httpx
 from icalendar import Calendar
+from zoneinfo import ZoneInfo
 
 from .base import BaseDriver
 from models import Event, Document, EventType
+
+# Default timezone for Twinsburg, OH
+LOCAL_TIMEZONE = ZoneInfo("America/New_York")
 
 
 class ICalendarDriver(BaseDriver):
@@ -167,7 +171,15 @@ class ICalendarDriver(BaseDriver):
             return None
 
     def _parse_datetime(self, dt_prop) -> Optional[datetime]:
-        """Parse an iCalendar datetime property."""
+        """
+        Parse an iCalendar datetime property and convert to local timezone.
+        
+        iCal datetimes can be:
+        1. UTC (DTSTART:20251217T180000Z)
+        2. Timezone-aware (DTSTART;TZID=America/New_York:20251217T180000)
+        3. Floating/naive (DTSTART:20251217T180000) - assumed local
+        4. Date-only (DTSTART;VALUE=DATE:20251217) - all-day events
+        """
         try:
             dt = dt_prop.dt
             
@@ -177,10 +189,13 @@ class ICalendarDriver(BaseDriver):
             
             # Handle datetime
             if isinstance(dt, datetime):
-                # If timezone-aware, convert to naive for storage
                 if dt.tzinfo:
-                    return dt.replace(tzinfo=None)
-                return dt
+                    # Convert timezone-aware datetime to local timezone, then make naive
+                    local_dt = dt.astimezone(LOCAL_TIMEZONE)
+                    return local_dt.replace(tzinfo=None)
+                else:
+                    # Naive datetime - assume it's already in local time
+                    return dt
             
             return None
         except Exception:

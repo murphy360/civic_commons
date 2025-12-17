@@ -1,7 +1,11 @@
-# Civic Commons MCP Server Dependencies
+# Civic Commons Server Dependencies
 
 # MCP SDK
 mcp>=1.0.0
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn>=0.30.0
 
 # Database
 asyncpg>=0.29.0
@@ -9,8 +13,11 @@ asyncpg>=0.29.0
 # Configuration
 pydantic>=2.5.0
 
-# HTTP client (for potential external calls)
+# HTTP client (for Gemini API calls)
 httpx>=0.26.0
+
+# Streaming support
+sse-starlette>=2.0.0
 
 # Development
 pytest>=7.4.0

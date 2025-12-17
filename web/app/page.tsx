@@ -37,10 +37,10 @@ export default function HomePage() {
               Newsletters
             </Link>
             <Link
-              href="/search"
+              href="/discuss"
               className="transition-colors hover:text-foreground/80 text-foreground/60"
             >
-              Search
+              Discuss
             </Link>
           </nav>
         </div>
@@ -65,10 +65,10 @@ export default function HomePage() {
             View Events
           </Link>
           <Link
-            href="/search"
+            href="/discuss"
             className="inline-flex items-center justify-center rounded-md border border-input bg-background px-8 py-3 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
           >
-            Search Documents
+            Ask a Question
           </Link>
         </div>
       </section>

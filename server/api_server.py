@@ -1,0 +1,447 @@
+"""
+Civic Commons API Server
+
+FastAPI server providing HTTP endpoints for the web frontend,
+including chat API with Gemini function calling.
+
+Usage:
+    uvicorn api_server:app --host 0.0.0.0 --port 8080
+
+Environment Variables:
+    DATABASE_URL - PostgreSQL connection string
+    GEMINI_API_KEY - Google AI API key for chat
+    API_CORS_ORIGINS - Comma-separated list of allowed origins
+"""
+
+import asyncio
+import json
+import logging
+import os
+import sys
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta
+from typing import Any, AsyncIterator, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from config import get_config
+from db import Database
+from chat import ChatService
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("civic_commons.api")
+
+
+# Global instances
+_db: Database | None = None
+_chat: ChatService | None = None
+
+
+async def get_db() -> Database:
+    """Get the database instance, initializing if needed."""
+    global _db
+    if _db is None:
+        config = get_config()
+        _db = await Database.create(config.database_url)
+        logger.info("Database connection pool initialized")
+    return _db
+
+
+async def get_chat() -> ChatService:
+    """Get the chat service instance."""
+    global _chat
+    if _chat is None:
+        db = await get_db()
+        _chat = ChatService(db)
+        logger.info("Chat service initialized")
+    return _chat
+
+
+async def close_services() -> None:
+    """Close all service connections."""
+    global _db, _chat
+    
+    if _chat is not None:
+        await _chat.close()
+        _chat = None
+        
+    if _db is not None:
+        await _db.close()
+        _db = None
+        
+    logger.info("Services closed")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Manage server lifecycle."""
+    logger.info("Starting Civic Commons API Server")
+    
+    # Initialize services
+    await get_db()
+    await get_chat()
+    
+    logger.info("API server ready")
+    
+    try:
+        yield
+    finally:
+        logger.info("Shutting down API server")
+        await close_services()
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="Civic Commons API",
+    description="API for accessing civic data and AI chat",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Configure CORS - allow all localhost ports for development
+cors_origins = os.getenv("API_CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for now (can restrict in production)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ============================================================================
+# Request/Response Models
+# ============================================================================
+
+class ChatMessage(BaseModel):
+    """A single chat message."""
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """Request body for chat endpoint."""
+    messages: list[ChatMessage]
+    stream: bool = True
+
+
+class ChatResponse(BaseModel):
+    """Response body for non-streaming chat."""
+    content: str
+    tool_calls: list[dict[str, Any]] = []
+
+
+class EventsRequest(BaseModel):
+    """Request for events search."""
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    source_type: Optional[str] = None
+    limit: int = 50
+
+
+class DocumentSearchRequest(BaseModel):
+    """Request for document search."""
+    query: str
+    source_type: Optional[str] = None
+    limit: int = 20
+
+
+# ============================================================================
+# API Endpoints
+# ============================================================================
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    try:
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return {"status": "healthy"}
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=503, detail="Service unhealthy")
+
+
+@app.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    """
+    Chat with the AI assistant.
+    
+    Sends messages to Gemini with function calling to access civic data.
+    Returns a streaming SSE response with tool calls and final message.
+    """
+    chat_service = await get_chat()
+    
+    if not chat_service.enabled:
+        raise HTTPException(
+            status_code=503, 
+            detail="Chat service not configured. GEMINI_API_KEY is required."
+        )
+    
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    
+    if request.stream:
+        async def generate():
+            """Generate SSE events."""
+            async for chunk in chat_service.chat(messages, stream=True):
+                # Format as SSE event
+                data = json.dumps(chunk)
+                yield f"data: {data}\n\n"
+            
+            # Send done event
+            yield "data: [DONE]\n\n"
+        
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
+    else:
+        # Non-streaming: collect full response
+        content = ""
+        tool_calls = []
+        
+        async for chunk in chat_service.chat(messages, stream=False):
+            if chunk["type"] == "message":
+                content = chunk["content"]
+            elif chunk["type"] == "tool_call":
+                tool_calls.append(chunk)
+            elif chunk["type"] == "error":
+                raise HTTPException(status_code=500, detail=chunk["content"])
+        
+        return ChatResponse(content=content, tool_calls=tool_calls)
+
+
+@app.get("/events")
+async def get_events(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    source_type: Optional[str] = None,
+    limit: int = 50,
+):
+    """
+    Get events within a date range.
+    
+    Args:
+        start_date: Start date (YYYY-MM-DD), defaults to today
+        end_date: End date (YYYY-MM-DD), defaults to 30 days from start
+        source_type: Filter by source type
+        limit: Maximum results
+    """
+    db = await get_db()
+    
+    today = date.today()
+    start = date.fromisoformat(start_date) if start_date else today
+    end = date.fromisoformat(end_date) if end_date else start + timedelta(days=30)
+    
+    events = await db.get_events(
+        city_id="twinsburg",
+        start_date=start,
+        end_date=end,
+        source_type=source_type,
+        limit=limit,
+    )
+    
+    return {
+        "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+        "total": len(events),
+        "events": [
+            {
+                "id": e["id"],
+                "title": e["title"],
+                "description": e.get("description"),
+                "start_time": e["start_time"].isoformat() if e.get("start_time") else None,
+                "end_time": e["end_time"].isoformat() if e.get("end_time") else None,
+                "location": e.get("location"),
+                "source": e.get("source_name"),
+                "source_url": e.get("source_url"),
+            }
+            for e in events
+        ]
+    }
+
+
+@app.get("/documents/search")
+async def search_documents(
+    query: str,
+    source_type: Optional[str] = None,
+    limit: int = 20,
+):
+    """
+    Search documents by keyword.
+    
+    Args:
+        query: Search query
+        source_type: Filter by source type
+        limit: Maximum results
+    """
+    db = await get_db()
+    
+    results = await db.search_documents(
+        city_id="twinsburg",
+        query=query,
+        source_type=source_type,
+        limit=limit,
+    )
+    
+    return {
+        "query": query,
+        "total": len(results),
+        "documents": [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "type": r.get("document_type"),
+                "published_date": r["published_date"].isoformat() if r.get("published_date") else None,
+                "source": r.get("source_name"),
+                "source_url": r.get("source_url"),
+                "relevance": float(r.get("rank", 0)),
+            }
+            for r in results
+        ]
+    }
+
+
+@app.get("/documents/{document_id}")
+async def get_document(document_id: int):
+    """
+    Get a document by ID.
+    
+    Args:
+        document_id: The document ID
+    """
+    db = await get_db()
+    
+    doc = await db.get_document_content(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    return {
+        "id": doc["id"],
+        "title": doc["title"],
+        "type": doc.get("document_type"),
+        "content": doc.get("content_markdown") or doc.get("content_text"),
+        "source": doc.get("source_name"),
+        "source_url": doc.get("source_url"),
+        "published_date": doc["published_date"].isoformat() if doc.get("published_date") else None,
+    }
+
+
+@app.get("/legislation")
+async def get_legislation(
+    legislation_type: Optional[str] = None,
+    legislation_number: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+):
+    """
+    Get legislation mentions.
+    
+    Args:
+        legislation_type: Filter by type (ordinance, resolution, motion)
+        legislation_number: Filter by number
+        search: Search in titles
+        limit: Maximum results
+    """
+    db = await get_db()
+    
+    query = """
+        SELECT 
+            lm.id,
+            lm.legislation_type,
+            lm.legislation_number,
+            lm.legislation_title,
+            lm.action_taken,
+            lm.vote_result,
+            lm.vote_details,
+            lm.mentioned_date,
+            d.title as document_title,
+            d.id as document_id,
+            e.title as event_title,
+            e.id as event_id,
+            e.start_time as event_date
+        FROM legislation_mentions lm
+        LEFT JOIN documents d ON lm.document_id = d.id
+        LEFT JOIN events e ON lm.event_id = e.id
+        WHERE 1=1
+    """
+    params: list = []
+    
+    if legislation_type:
+        params.append(legislation_type)
+        query += f" AND lm.legislation_type = ${len(params)}"
+    
+    if legislation_number:
+        params.append(f"%{legislation_number}%")
+        query += f" AND lm.legislation_number ILIKE ${len(params)}"
+    
+    if search:
+        params.append(f"%{search}%")
+        query += f" AND lm.legislation_title ILIKE ${len(params)}"
+    
+    query += " ORDER BY lm.mentioned_date DESC NULLS LAST, lm.id DESC"
+    params.append(limit)
+    query += f" LIMIT ${len(params)}"
+    
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+    
+    return {
+        "total": len(rows),
+        "legislation": [
+            {
+                "id": r["id"],
+                "type": r["legislation_type"],
+                "number": r["legislation_number"],
+                "title": r["legislation_title"],
+                "action": r["action_taken"],
+                "vote_result": r["vote_result"],
+                "vote_details": dict(r["vote_details"]) if r["vote_details"] else None,
+                "document": {
+                    "id": r["document_id"],
+                    "title": r["document_title"],
+                } if r["document_id"] else None,
+                "event": {
+                    "id": r["event_id"],
+                    "title": r["event_title"],
+                    "date": r["event_date"].isoformat() if r["event_date"] else None,
+                } if r["event_id"] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ============================================================================
+# Main entry point
+# ============================================================================
+
+def main():
+    """Run the API server."""
+    import uvicorn
+    
+    config = get_config()
+    uvicorn.run(
+        "api_server:app",
+        host=config.host,
+        port=config.port,
+        reload=False,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

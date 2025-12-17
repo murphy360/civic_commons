@@ -255,6 +255,108 @@ creates new or links to existing. Returns summary of actions taken.""",
                 },
                 "required": ["source_name", "events"]
             }
+        ),
+        Tool(
+            name="link_legislation",
+            description="""Link legislation (ordinance, resolution, etc.) to a meeting/document.
+Call this when AI extracts legislation mentions from a document to create
+structured records of what legislation was discussed and what action was taken.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "integer",
+                        "description": "The document ID where legislation was mentioned"
+                    },
+                    "event_id": {
+                        "type": "integer",
+                        "description": "The event (meeting) ID this document is linked to (optional)"
+                    },
+                    "legislation_type": {
+                        "type": "string",
+                        "description": "Type of legislation: 'ordinance', 'resolution', 'motion', 'bylaw', 'proclamation'"
+                    },
+                    "legislation_number": {
+                        "type": "string",
+                        "description": "Legislation number/identifier (e.g., '2025-139', 'R-2025-12')"
+                    },
+                    "legislation_title": {
+                        "type": "string",
+                        "description": "Full title of the legislation (optional)"
+                    },
+                    "action_taken": {
+                        "type": "string",
+                        "description": "Action taken: 'introduced', 'first_reading', 'second_reading', 'third_reading', 'public_hearing', 'amended', 'tabled', 'referred', 'approved', 'failed', 'vetoed', 'withdrawn', 'discussed'"
+                    },
+                    "vote_result": {
+                        "type": "string",
+                        "description": "Result of vote if one occurred: 'passed', 'failed', 'tabled', 'unanimous' (optional)"
+                    },
+                    "vote_details": {
+                        "type": "object",
+                        "description": "Vote breakdown: {\"yes\": 5, \"no\": 2, \"abstain\": 0, \"absent\": 0} (optional)"
+                    },
+                    "excerpt": {
+                        "type": "string",
+                        "description": "Relevant excerpt from the document (optional)"
+                    }
+                },
+                "required": ["document_id", "legislation_type", "legislation_number", "action_taken"]
+            }
+        ),
+        Tool(
+            name="find_legislation_mentions",
+            description="""Search for all mentions of a specific piece of legislation across meetings.
+Returns the complete history of an ordinance/resolution including when it was
+discussed, what actions were taken, and vote results.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "legislation_number": {
+                        "type": "string",
+                        "description": "Legislation number to search for (e.g., '2025-139')"
+                    }
+                },
+                "required": ["legislation_number"]
+            }
+        ),
+        Tool(
+            name="reanalyze_documents",
+            description="""Clear AI summaries and legislation mentions from documents to trigger re-analysis.
+Use this when you need to reprocess documents for updated legislation extraction.
+Can target specific documents by ID, or recent documents by date range.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "document_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Specific document IDs to reanalyze"
+                    },
+                    "days_back": {
+                        "type": "integer",
+                        "description": "Reanalyze documents from the last N days (default 30)"
+                    },
+                    "document_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by document types: 'agenda', 'minutes', 'packet' (default: all meeting docs)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum documents to reanalyze (default 20, max 100)"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="get_document_analysis_status",
+            description="""Get the current status of document analysis including counts of
+documents pending summaries, documents with legislation mentions, and recent analysis activity.""",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
         )
     ]
 
@@ -283,6 +385,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = await update_event(pool, arguments)
         elif name == "process_event_batch":
             result = await process_event_batch(pool, arguments)
+        elif name == "link_legislation":
+            result = await link_legislation(pool, arguments)
+        elif name == "find_legislation_mentions":
+            result = await find_legislation_mentions(pool, arguments)
+        elif name == "reanalyze_documents":
+            result = await reanalyze_documents(pool, arguments)
+        elif name == "get_document_analysis_status":
+            result = await get_document_analysis_status(pool, arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
         
@@ -611,6 +721,318 @@ async def process_event_batch(pool: asyncpg.Pool, args: dict) -> dict:
             })
     
     return results
+
+
+async def link_legislation(pool: asyncpg.Pool, args: dict) -> dict:
+    """Link legislation to a document and optionally an event.
+    
+    Creates or updates a record in the legislation_mentions table.
+    """
+    document_id = args["document_id"]
+    legislation_type = args["legislation_type"]
+    legislation_number = args["legislation_number"]
+    action_taken = args["action_taken"]
+    
+    event_id = args.get("event_id")
+    legislation_title = args.get("legislation_title")
+    vote_result = args.get("vote_result")
+    vote_details = args.get("vote_details")
+    excerpt = args.get("excerpt")
+    
+    async with pool.acquire() as conn:
+        # First, get the document to get its meeting_date
+        doc = await conn.fetchrow(
+            "SELECT id, meeting_date FROM documents WHERE id = $1",
+            document_id
+        )
+        
+        if not doc:
+            return {"error": f"Document {document_id} not found"}
+        
+        mentioned_date = doc["meeting_date"]
+        
+        # Check if this mention already exists
+        existing = await conn.fetchrow("""
+            SELECT id FROM legislation_mentions
+            WHERE document_id = $1
+              AND legislation_number = $2
+              AND action_taken = $3
+        """, document_id, legislation_number, action_taken)
+        
+        if existing:
+            # Update existing mention
+            mention_id = existing["id"]
+            await conn.execute("""
+                UPDATE legislation_mentions
+                SET legislation_title = COALESCE($2, legislation_title),
+                    vote_result = COALESCE($3, vote_result),
+                    vote_details = COALESCE($4, vote_details),
+                    excerpt = COALESCE($5, excerpt),
+                    event_id = COALESCE($6, event_id),
+                    updated_at = NOW()
+                WHERE id = $1
+            """, mention_id, legislation_title, vote_result, 
+                json.dumps(vote_details) if vote_details else None,
+                excerpt, event_id)
+            
+            action = "updated"
+        else:
+            # Create new mention
+            mention_id = await conn.fetchval("""
+                INSERT INTO legislation_mentions (
+                    document_id,
+                    event_id,
+                    legislation_type,
+                    legislation_number,
+                    legislation_title,
+                    action_taken,
+                    vote_result,
+                    vote_details,
+                    excerpt,
+                    mentioned_date
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING id
+            """, document_id, event_id, legislation_type, legislation_number,
+                legislation_title, action_taken, vote_result,
+                json.dumps(vote_details) if vote_details else None,
+                excerpt, mentioned_date)
+            
+            action = "created"
+        
+        return {
+            "success": True,
+            "action": action,
+            "mention_id": mention_id,
+            "legislation_number": legislation_number,
+            "legislation_type": legislation_type,
+            "action_taken": action_taken,
+            "document_id": document_id,
+            "event_id": event_id,
+            "mentioned_date": mentioned_date.isoformat() if mentioned_date else None
+        }
+
+
+async def find_legislation_mentions(pool: asyncpg.Pool, args: dict) -> dict:
+    """Find all mentions of a specific piece of legislation across meetings.
+    
+    Returns the complete history including documents, events, actions, and votes.
+    """
+    legislation_number = args["legislation_number"]
+    
+    async with pool.acquire() as conn:
+        mentions = await conn.fetch("""
+            SELECT 
+                lm.id,
+                lm.document_id,
+                d.title as document_title,
+                d.document_type,
+                lm.event_id,
+                e.title as event_title,
+                e.start_time as event_time,
+                lm.legislation_type,
+                lm.legislation_title,
+                lm.action_taken,
+                lm.vote_result,
+                lm.vote_details,
+                lm.excerpt,
+                lm.mentioned_date,
+                s.name as source_name
+            FROM legislation_mentions lm
+            JOIN documents d ON lm.document_id = d.id
+            JOIN sources s ON d.source_id = s.id
+            LEFT JOIN events e ON lm.event_id = e.id
+            WHERE lm.legislation_number ILIKE $1
+            ORDER BY lm.mentioned_date ASC NULLS LAST, lm.created_at ASC
+        """, legislation_number)
+        
+        if not mentions:
+            return {
+                "legislation_number": legislation_number,
+                "found": False,
+                "mentions": []
+            }
+        
+        # Group by unique legislation info
+        legislation_info = {
+            "type": mentions[0]["legislation_type"],
+            "number": legislation_number,
+            "title": mentions[0]["legislation_title"]
+        }
+        
+        # Serialize mentions for JSON response
+        serialized_mentions = []
+        for m in mentions:
+            mention = {
+                "mention_id": m["id"],
+                "document_id": m["document_id"],
+                "document_title": m["document_title"],
+                "document_type": m["document_type"],
+                "source_name": m["source_name"],
+                "event_id": m["event_id"],
+                "event_title": m["event_title"],
+                "event_time": m["event_time"].isoformat() if m["event_time"] else None,
+                "action_taken": m["action_taken"],
+                "vote_result": m["vote_result"],
+                "vote_details": m["vote_details"],  # Already a dict from DB
+                "excerpt": m["excerpt"],
+                "mentioned_date": m["mentioned_date"].isoformat() if m["mentioned_date"] else None
+            }
+            serialized_mentions.append(mention)
+        
+        # Extract timeline of actions
+        timeline = []
+        for m in mentions:
+            timeline.append({
+                "date": m["mentioned_date"].isoformat() if m["mentioned_date"] else m["created_at"].isoformat() if hasattr(m, "created_at") else None,
+                "action": m["action_taken"],
+                "event": m["event_title"],
+                "vote": m["vote_result"],
+                "document": m["document_title"]
+            })
+        
+        return {
+            "legislation": legislation_info,
+            "found": True,
+            "mention_count": len(mentions),
+            "timeline": timeline,
+            "mentions": serialized_mentions
+        }
+
+
+async def reanalyze_documents(pool: asyncpg.Pool, args: dict) -> dict:
+    """Clear AI summaries and legislation mentions to trigger re-analysis.
+    
+    Can target specific documents or recent documents by date.
+    """
+    document_ids = args.get("document_ids")
+    days_back = args.get("days_back", 30)
+    document_types = args.get("document_types", ["agenda", "minutes", "packet"])
+    limit = min(args.get("limit", 20), 100)  # Cap at 100
+    
+    async with pool.acquire() as conn:
+        if document_ids:
+            # Specific documents requested
+            docs = await conn.fetch("""
+                SELECT id, title, document_type, meeting_date
+                FROM documents
+                WHERE id = ANY($1::int[])
+            """, document_ids)
+        else:
+            # Recent documents by date
+            docs = await conn.fetch("""
+                SELECT id, title, document_type, meeting_date
+                FROM documents
+                WHERE document_type = ANY($1::text[])
+                  AND ai_summary IS NOT NULL 
+                  AND ai_summary != ''
+                  AND (meeting_date >= NOW() - INTERVAL '1 day' * $2 OR meeting_date IS NULL)
+                ORDER BY meeting_date DESC NULLS LAST
+                LIMIT $3
+            """, document_types, days_back, limit)
+        
+        if not docs:
+            return {
+                "success": False,
+                "message": "No matching documents found",
+                "cleared": 0
+            }
+        
+        doc_ids = [doc["id"] for doc in docs]
+        
+        # Clear legislation mentions for these documents
+        mentions_deleted = await conn.fetchval("""
+            DELETE FROM legislation_mentions
+            WHERE document_id = ANY($1::int[])
+            RETURNING COUNT(*)
+        """, doc_ids) or 0
+        
+        # Clear AI summaries to trigger re-analysis
+        await conn.execute("""
+            UPDATE documents
+            SET ai_summary = NULL
+            WHERE id = ANY($1::int[])
+        """, doc_ids)
+        
+        return {
+            "success": True,
+            "message": f"Cleared {len(docs)} documents for re-analysis",
+            "documents_cleared": len(docs),
+            "legislation_mentions_removed": mentions_deleted,
+            "documents": [
+                {
+                    "id": doc["id"],
+                    "title": doc["title"],
+                    "type": doc["document_type"],
+                    "meeting_date": doc["meeting_date"].isoformat() if doc["meeting_date"] else None
+                }
+                for doc in docs
+            ]
+        }
+
+
+async def get_document_analysis_status(pool: asyncpg.Pool, args: dict) -> dict:
+    """Get current status of document analysis pipeline."""
+    async with pool.acquire() as conn:
+        # Count documents by summary status
+        summary_stats = await conn.fetchrow("""
+            SELECT 
+                COUNT(*) as total_documents,
+                COUNT(CASE WHEN ai_summary IS NOT NULL AND ai_summary != '' THEN 1 END) as with_summary,
+                COUNT(CASE WHEN ai_summary IS NULL OR ai_summary = '' THEN 1 END) as pending_summary
+            FROM documents
+            WHERE document_type IN ('agenda', 'minutes', 'packet')
+              AND local_path IS NOT NULL
+        """)
+        
+        # Count legislation mentions
+        legislation_stats = await conn.fetchrow("""
+            SELECT 
+                COUNT(*) as total_mentions,
+                COUNT(DISTINCT document_id) as documents_with_mentions,
+                COUNT(DISTINCT legislation_number) as unique_legislation
+            FROM legislation_mentions
+        """)
+        
+        # Recent analysis activity
+        recent_mentions = await conn.fetch("""
+            SELECT 
+                lm.legislation_type,
+                lm.legislation_number,
+                lm.action_taken,
+                d.title as document_title,
+                lm.created_at
+            FROM legislation_mentions lm
+            JOIN documents d ON lm.document_id = d.id
+            ORDER BY lm.created_at DESC
+            LIMIT 10
+        """)
+        
+        return {
+            "document_summary_status": {
+                "total_meeting_documents": summary_stats["total_documents"],
+                "with_summary": summary_stats["with_summary"],
+                "pending_summary": summary_stats["pending_summary"],
+                "completion_percent": round(
+                    100 * summary_stats["with_summary"] / max(summary_stats["total_documents"], 1), 1
+                )
+            },
+            "legislation_extraction": {
+                "total_mentions": legislation_stats["total_mentions"],
+                "documents_with_mentions": legislation_stats["documents_with_mentions"],
+                "unique_legislation_items": legislation_stats["unique_legislation"]
+            },
+            "recent_extractions": [
+                {
+                    "type": m["legislation_type"],
+                    "number": m["legislation_number"],
+                    "action": m["action_taken"],
+                    "from_document": m["document_title"],
+                    "extracted_at": m["created_at"].isoformat()
+                }
+                for m in recent_mentions
+            ]
+        }
 
 
 # =============================================================================

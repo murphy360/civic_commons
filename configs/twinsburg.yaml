@@ -572,7 +572,7 @@ sources:
   # UNIQUE: Only source for school board agendas and minutes
   # EXAMPLES: Regular meetings, special meetings, finance committee, curriculum meetings
   - name: "TCSD Board of Education"
-    driver: "aspnet_generic"
+    driver: "tcsd_agendas"
     enabled: true
     schedule: "0 8 * * *"
     params:

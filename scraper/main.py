@@ -417,7 +417,7 @@ class Worker:
                     if matching_config and matching_source:
                         logger.info(f"Manual trigger: Running scrape for {source_name}")
                         try:
-                            await self.scrape_source(matching_config, matching_source)
+                            await self.scrape_source(matching_config, matching_source, skip_queue_check=True)
                         except Exception as e:
                             logger.error(f"Manual trigger: Error scraping {source_name}: {e}")
                     else:
@@ -478,14 +478,19 @@ class Worker:
                 await self._process_document_summaries(conn, batch_size)
                 
                 # Phase 4: Generate event summaries
-                # Only if Phase 3 is clear (no docs needing summaries)
+                # Only if Phase 3 is clear (no docs within age limit needing summaries)
+                max_age_days = int(os.getenv("AI_SUMMARY_MAX_AGE_DAYS", "365"))
                 pending_summaries = await conn.fetchval("""
-                    SELECT COUNT(*) FROM documents 
-                    WHERE (ai_summary IS NULL OR ai_summary = '') 
-                      AND local_path IS NOT NULL
-                """)
+                    SELECT COUNT(*) FROM documents d
+                    LEFT JOIN event_documents ed ON d.id = ed.document_id
+                    LEFT JOIN events e ON ed.event_id = e.id
+                    WHERE (d.ai_summary IS NULL OR d.ai_summary = '') 
+                      AND d.local_path IS NOT NULL
+                      AND d.document_type NOT IN ('ordinance', 'resolution')
+                      AND COALESCE(d.meeting_date, e.start_time) >= NOW() - INTERVAL '1 day' * $1
+                """, max_age_days)
                 if pending_summaries > 0:
-                    logger.info(f"AI analysis queue: {pending_summaries} docs need summaries, skipping event summaries")
+                    logger.info(f"AI analysis queue: {pending_summaries} docs need summaries (within {max_age_days} days), skipping event summaries")
                     return
                 
                 await self._process_event_summaries(conn, batch_size)
@@ -499,13 +504,18 @@ class Worker:
         """Generate AI summaries for documents that don't have them.
         
         Prioritizes documents that need summaries for linking (linking_status='needs_summary').
-        Respects ai_summary_max_age_days setting to skip old documents.
+        Respects ai_summary_max_age_days setting to skip old documents based on meeting_date.
         """
-        # Build age filter if configured
+        # Build age filter if configured - only summarize recent documents
         max_age_days = self.settings.ai_summary_max_age_days
         age_filter = ""
         if max_age_days > 0:
-            age_filter = f"AND (meeting_date >= NOW() - INTERVAL '{max_age_days} days' OR (meeting_date IS NULL AND created_at >= NOW() - INTERVAL '{max_age_days} days'))"
+            # Only process documents with meeting_date within the age limit
+            # Documents without meeting_date are processed (they're likely recent)
+            age_filter = f"""AND (
+                meeting_date >= NOW() - INTERVAL '{max_age_days} days'
+                OR meeting_date IS NULL
+            )"""
         
         docs = await conn.fetch(f"""
             SELECT id, title, document_type, content_markdown, local_path, source_url, linking_status
@@ -557,14 +567,26 @@ class Worker:
                         doc["id"],
                         ai_summary=summary,
                     )
+                    logger.info(f"AI summary generated for '{doc['title']}'")
+                    
+                    # Extract legislation mentions from this document
+                    # (only for meeting documents, not videos)
+                    if doc["document_type"] != "video":
+                        await self._extract_and_link_legislation(
+                            conn,
+                            doc["id"],
+                            doc["title"],
+                            doc["document_type"],
+                            doc["content_markdown"],
+                            doc["local_path"]
+                        )
+                    
                     # If doc was waiting for summary to link, reset linking status
                     if doc.get("linking_status") == "needs_summary":
                         await conn.execute("""
                             UPDATE documents SET linking_status = 'pending' WHERE id = $1
                         """, doc["id"])
                         logger.info(f"AI summary generated for '{doc['title']}' - now ready for linking")
-                    else:
-                        logger.info(f"AI summary generated for '{doc['title']}'")
                 else:
                     # Mark as processed (empty summary) to avoid reprocessing
                     await conn.execute("""
@@ -574,9 +596,7 @@ class Worker:
                     
             except Exception as e:
                 logger.warning(f"AI analysis failed for '{doc['title']}': {e}")
-                # Don't mark as processed - will retry later
-
-    async def _get_pending_linking_count(self, conn) -> int:
+                # Don't mark as processed - will retry later    async def _get_pending_linking_count(self, conn) -> int:
         """Get count of documents that are ready to be linked but haven't been yet.
         
         Linkable documents are:
@@ -1328,6 +1348,117 @@ class Worker:
                 """, doc["id"])
         
         return linked_count
+
+    async def _extract_and_link_legislation(
+        self,
+        conn,
+        document_id: int,
+        doc_title: str,
+        doc_type: str,
+        content_markdown: Optional[str],
+        local_path: Optional[str]
+    ) -> None:
+        """
+        Extract legislation mentions from a document and create links.
+        
+        This is called after a document summary is generated.
+        Extracts structured legislation data and stores in legislation_mentions table.
+        """
+        if not self.doc_summarizer or not self.doc_summarizer.enabled:
+            return
+        
+        try:
+            # Extract legislation mentions from the document
+            legislation_list = await self.doc_summarizer.extract_legislation(
+                title=doc_title,
+                document_type=doc_type,
+                content_text=content_markdown,
+                local_path=local_path,
+            )
+            
+            if not legislation_list:
+                logger.debug(f"No legislation found in '{doc_title}'")
+                return
+            
+            logger.info(f"Extracted {len(legislation_list)} legislation mentions from '{doc_title}'")
+            
+            # Try to find linked event for this document
+            event_id = await conn.fetchval("""
+                SELECT event_id FROM event_documents WHERE document_id = $1 LIMIT 1
+            """, document_id)
+            
+            # Store each legislation mention
+            for legis in legislation_list:
+                try:
+                    # Extract fields with defaults, handling None values
+                    legis_type = (legis.get("type") or "").lower().strip()
+                    legis_number = (legis.get("number") or "").strip()
+                    legis_title = (legis.get("title") or "").strip() or None
+                    action = (legis.get("action") or "discussed").lower().strip()
+                    vote_result = (legis.get("vote_result") or "").strip() or None
+                    vote_details = (legis.get("vote_details") or "").strip() or None
+                    excerpt = (legis.get("excerpt") or "").strip() or None
+                    
+                    if not legis_type or not legis_number:
+                        logger.debug(f"Skipping legislation with missing type or number: {legis}")
+                        continue
+                    
+                    # Get document meeting date for linking
+                    doc = await conn.fetchrow("""
+                        SELECT meeting_date FROM documents WHERE id = $1
+                    """, document_id)
+                    
+                    mentioned_date = doc["meeting_date"] if doc else None
+                    
+                    # Check if this mention already exists
+                    existing = await conn.fetchrow("""
+                        SELECT id FROM legislation_mentions
+                        WHERE document_id = $1
+                          AND legislation_number = $2
+                          AND action_taken = $3
+                    """, document_id, legis_number, action)
+                    
+                    if existing:
+                        # Update existing
+                        await conn.execute("""
+                            UPDATE legislation_mentions
+                            SET legislation_title = COALESCE($2, legislation_title),
+                                vote_result = COALESCE($3, vote_result),
+                                vote_details = COALESCE($4, vote_details),
+                                excerpt = COALESCE($5, excerpt),
+                                event_id = COALESCE($6, event_id),
+                                updated_at = NOW()
+                            WHERE id = $1
+                        """, existing["id"], legis_title, vote_result,
+                            vote_details, excerpt, event_id)
+                        logger.debug(f"Updated legislation mention: {legis_type} {legis_number} ({action})")
+                    else:
+                        # Create new
+                        await conn.execute("""
+                            INSERT INTO legislation_mentions (
+                                document_id,
+                                event_id,
+                                legislation_type,
+                                legislation_number,
+                                legislation_title,
+                                action_taken,
+                                vote_result,
+                                vote_details,
+                                excerpt,
+                                mentioned_date
+                            )
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        """, document_id, event_id, legis_type, legis_number,
+                            legis_title, action, vote_result, vote_details,
+                            excerpt, mentioned_date)
+                        logger.debug(f"Created legislation mention: {legis_type} {legis_number} ({action})")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to store legislation mention: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.warning(f"Legislation extraction failed for '{doc_title}': {e}")
 
     async def _process_event_summaries(self, conn, batch_size: int) -> None:
         """Generate AI summaries for events that have linked documents.
