@@ -435,17 +435,16 @@ class Worker:
         """
         Process documents and events that need AI analysis.
         
-        Processing order prioritizes linking before summarization:
-        1. PRIORITY: Link documents that already have summaries to events
-           - Documents that can't be linked are marked as 'pending_retry'
-        2. Generate event summaries for linked events
-           - Events with linked documents get comprehensive summaries
-        3. Generate document summaries for docs that don't have them yet
-           - Only after ALL linkable documents are processed
-        
-        Returns queue status for use by scraping scheduler.
-        Runs as a background job separate from scraping.
-        Uses batch_size from settings.ai_queue_batch_size.
+        Processing order (strict priority):
+        Phase 1: Date-based linking (NO AI, NO SPEED LIMIT)
+           - Links docs with meeting_date to events by exact date match
+           - Runs until all date-linkable docs are processed
+        Phase 2: AI-assisted linking (uses batch_size)
+           - Links docs that have summaries but couldn't be date-matched
+        Phase 3: Generate document summaries (uses batch_size)
+           - Only runs after Phase 1 & 2 are clear
+        Phase 4: Generate event summaries (uses batch_size)
+           - Only runs after Phase 3 is clear
         """
         batch_size = self.settings.ai_queue_batch_size
         logger.info("AI analysis queue: Starting processing run...")
@@ -456,20 +455,40 @@ class Worker:
         
         try:
             async with self.db_pool.acquire() as conn:
-                # Phase 1: PRIORITY - Link documents with summaries to events first
-                # Documents that can't be linked are marked for retry
-                linked_count = await self._process_document_linking(conn, batch_size)
+                # Phase 1: Date-based linking (NO SPEED LIMIT)
+                # Process ALL date-linkable documents in one go
+                date_linked = await self._process_date_based_linking(conn)
                 
-                # Phase 2: Generate event summaries for linked events
+                # Phase 2: AI-assisted linking (for docs with summaries)
+                # Only if Phase 1 is clear
+                pending_date_linking = await self._get_date_linkable_count(conn)
+                if pending_date_linking > 0:
+                    logger.info(f"AI analysis queue: {pending_date_linking} docs still date-linkable, skipping AI phases")
+                    return
+                
+                ai_linked = await self._process_ai_linking(conn, batch_size)
+                
+                # Phase 3: Generate document summaries
+                # Only if Phase 1 & 2 are clear
+                pending_ai_linking = await self._get_ai_linkable_count(conn)
+                if pending_ai_linking > 0:
+                    logger.info(f"AI analysis queue: {pending_ai_linking} docs pending AI linking, skipping summaries")
+                    return
+                
+                await self._process_document_summaries(conn, batch_size)
+                
+                # Phase 4: Generate event summaries
+                # Only if Phase 3 is clear (no docs needing summaries)
+                pending_summaries = await conn.fetchval("""
+                    SELECT COUNT(*) FROM documents 
+                    WHERE (ai_summary IS NULL OR ai_summary = '') 
+                      AND local_path IS NOT NULL
+                """)
+                if pending_summaries > 0:
+                    logger.info(f"AI analysis queue: {pending_summaries} docs need summaries, skipping event summaries")
+                    return
+                
                 await self._process_event_summaries(conn, batch_size)
-                
-                # Phase 3: Generate document summaries (only after ALL linkable docs are done)
-                # Only proceed if no more documents are pending linking
-                pending_linking = await self._get_pending_linking_count(conn)
-                if pending_linking == 0:
-                    await self._process_document_summaries(conn, batch_size)
-                else:
-                    logger.info(f"AI analysis queue: {pending_linking} docs still pending linking, skipping summaries")
                 
             logger.info("AI analysis queue: Processing run complete")
                         
@@ -480,12 +499,20 @@ class Worker:
         """Generate AI summaries for documents that don't have them.
         
         Prioritizes documents that need summaries for linking (linking_status='needs_summary').
+        Respects ai_summary_max_age_days setting to skip old documents.
         """
-        docs = await conn.fetch("""
+        # Build age filter if configured
+        max_age_days = self.settings.ai_summary_max_age_days
+        age_filter = ""
+        if max_age_days > 0:
+            age_filter = f"AND (meeting_date >= NOW() - INTERVAL '{max_age_days} days' OR (meeting_date IS NULL AND created_at >= NOW() - INTERVAL '{max_age_days} days'))"
+        
+        docs = await conn.fetch(f"""
             SELECT id, title, document_type, content_markdown, local_path, source_url, linking_status
             FROM documents
             WHERE (ai_summary IS NULL OR ai_summary = '')
               AND local_path IS NOT NULL
+              {age_filter}
             ORDER BY 
                 -- Prioritize docs that need summary for linking
                 CASE WHEN linking_status = 'needs_summary' THEN 0 ELSE 1 END,
@@ -499,7 +526,10 @@ class Worker:
         """, batch_size)
         
         if not docs:
-            logger.debug("AI analysis queue: No documents pending summaries")
+            if max_age_days > 0:
+                logger.debug(f"AI analysis queue: No documents pending summaries (within {max_age_days} days)")
+            else:
+                logger.debug("AI analysis queue: No documents pending summaries")
             return
         
         logger.info(f"AI analysis queue: Processing {len(docs)} document summaries")
@@ -667,6 +697,370 @@ class Worker:
             
             return is_busy
 
+    async def _get_date_linkable_count(self, conn) -> int:
+        """Count documents that can be linked by date (no AI needed)."""
+        return await conn.fetchval("""
+            SELECT COUNT(*)
+            FROM documents d
+            LEFT JOIN event_documents ed ON d.id = ed.document_id
+            WHERE ed.document_id IS NULL
+              AND (d.linking_status IS NULL OR d.linking_status IN ('pending', 'pending_retry'))
+              AND (d.linking_retry_after IS NULL OR d.linking_retry_after <= NOW())
+              AND d.meeting_date IS NOT NULL
+              AND d.document_type NOT IN ('ordinance', 'resolution')
+        """) or 0
+
+    async def _get_ai_linkable_count(self, conn) -> int:
+        """Count documents that need AI to link (have summary but no date match)."""
+        return await conn.fetchval("""
+            SELECT COUNT(*)
+            FROM documents d
+            LEFT JOIN event_documents ed ON d.id = ed.document_id
+            WHERE ed.document_id IS NULL
+              AND (d.linking_status IS NULL OR d.linking_status IN ('pending', 'needs_summary'))
+              AND d.meeting_date IS NULL
+              AND d.ai_summary IS NOT NULL AND d.ai_summary != ''
+              AND d.document_type NOT IN ('ordinance', 'resolution')
+        """) or 0
+
+    async def _process_date_based_linking(self, conn) -> int:
+        """
+        Phase 1: Link documents by date match (NO AI, NO SPEED LIMIT).
+        
+        Processes ALL documents that have meeting_date and can be linked
+        by exact date match. This is fast and doesn't use AI.
+        """
+        # First, mark any ordinances/resolutions as not needing linking (standalone legislation)
+        standalone_updated = await conn.execute("""
+            UPDATE documents 
+            SET linking_status = 'not_applicable'
+            WHERE document_type IN ('ordinance', 'resolution')
+              AND (linking_status IS NULL OR linking_status IN ('pending', 'pending_retry'))
+        """)
+        if standalone_updated and 'UPDATE' in standalone_updated:
+            count = int(standalone_updated.split()[1]) if len(standalone_updated.split()) > 1 else 0
+            if count > 0:
+                logger.info(f"AI analysis queue: Marked {count} ordinances/resolutions as standalone (not_applicable)")
+        
+        # Get ALL date-linkable documents (no limit) - exclude standalone legislation
+        docs = await conn.fetch("""
+            SELECT d.id, d.title, d.document_type, d.meeting_date, d.source_id,
+                   d.linking_status, d.linking_attempts
+            FROM documents d
+            LEFT JOIN event_documents ed ON d.id = ed.document_id
+            WHERE ed.document_id IS NULL
+              AND (d.linking_status IS NULL OR d.linking_status IN ('pending', 'pending_retry'))
+              AND (d.linking_retry_after IS NULL OR d.linking_retry_after <= NOW())
+              AND d.meeting_date IS NOT NULL
+              AND d.document_type NOT IN ('ordinance', 'resolution')
+            ORDER BY d.meeting_date DESC, d.created_at DESC
+        """)
+        
+        if not docs:
+            logger.debug("AI analysis queue: No documents pending date-based linking")
+            return 0
+        
+        logger.info(f"AI analysis queue: Phase 1 - Date-linking {len(docs)} documents")
+        linked_count = 0
+        
+        for doc in docs:
+            try:
+                attempts = (doc.get("linking_attempts") or 0) + 1
+                meeting_date = doc["meeting_date"]
+                doc_date = meeting_date.date() if hasattr(meeting_date, 'date') else meeting_date
+                
+                # Find events on the exact date
+                # For videos, search across ALL sources in the same city (videos come from YouTube, not agenda center)
+                if doc["document_type"] == "video":
+                    events = await conn.fetch("""
+                        SELECT DISTINCT e.id, e.title, e.start_time, e.category
+                        FROM events e
+                        JOIN event_sources es ON e.id = es.event_id
+                        JOIN sources s ON es.source_id = s.id
+                        WHERE s.city_id = (SELECT city_id FROM sources WHERE id = $1)
+                          AND DATE(e.start_time) = $2
+                        ORDER BY e.start_time DESC
+                    """, doc["source_id"], doc_date)
+                else:
+                    events = await conn.fetch("""
+                        SELECT e.id, e.title, e.start_time, e.category
+                        FROM events e
+                        JOIN event_sources es ON e.id = es.event_id
+                        WHERE es.source_id = $1
+                          AND DATE(e.start_time) = $2
+                        ORDER BY e.start_time DESC
+                    """, doc["source_id"], doc_date)
+                
+                if not events:
+                    # No events on this date - create one if we have agenda/minutes/video
+                    if doc["document_type"] in ("agenda", "minutes", "video"):
+                        event_id = await self._create_event_from_document(conn, doc)
+                        if event_id:
+                            await self.db_pool.link_document_to_event(conn, doc["id"], event_id)
+                            await conn.execute("""
+                                UPDATE documents SET linking_status = 'linked', linking_attempts = $2 WHERE id = $1
+                            """, doc["id"], attempts)
+                            logger.info(f"Created event from '{doc['title']}' and linked")
+                            linked_count += 1
+                            continue
+                    
+                    # No events and can't create one - mark for retry
+                    await conn.execute("""
+                        UPDATE documents 
+                        SET linking_status = 'pending_retry', 
+                            linking_attempts = $2,
+                            linking_retry_after = NOW() + INTERVAL '1 hour'
+                        WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.debug(f"No events on {doc_date} for '{doc['title']}' - retry later")
+                    continue
+                
+                # Try to find best match
+                exact_match = None
+                doc_title_lower = doc["title"].lower()
+                
+                if len(events) == 1:
+                    exact_match = events[0]
+                else:
+                    # Multiple events - match by title/category
+                    best_match, best_score = None, 0
+                    meeting_types = [
+                        "city council", "council", "planning commission", "planning",
+                        "zoning", "board of zoning", "finance", "finance committee",
+                        "parks", "recreation", "school board", "board of education",
+                        "township", "trustees",
+                    ]
+                    
+                    for e in events:
+                        event_title_lower = e["title"].lower()
+                        event_category_lower = (e["category"] or "").lower()
+                        score = 0
+                        
+                        for meeting_type in meeting_types:
+                            if meeting_type in doc_title_lower:
+                                if meeting_type in event_title_lower or meeting_type in event_category_lower:
+                                    score += 10
+                                else:
+                                    score -= 5
+                        
+                        event_words = set(event_title_lower.split())
+                        doc_words = set(doc_title_lower.split())
+                        common = event_words & doc_words - {"meeting", "agenda", "minutes", "the", "of", "and", "for"}
+                        score += len(common) * 2
+                        
+                        if score > best_score:
+                            best_score, best_match = score, e
+                    
+                    if best_match and best_score > 0:
+                        exact_match = best_match
+                
+                if exact_match:
+                    await self.db_pool.link_document_to_event(conn, doc["id"], exact_match["id"])
+                    await conn.execute("""
+                        UPDATE documents SET linking_status = 'linked', linking_attempts = $2 WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.info(f"Date-linked '{doc['title']}' → '{exact_match['title']}'")
+                    linked_count += 1
+                else:
+                    # Multiple events, couldn't determine which - needs AI
+                    await conn.execute("""
+                        UPDATE documents SET linking_status = 'needs_summary' WHERE id = $1
+                    """, doc["id"])
+                    logger.debug(f"'{doc['title']}' has multiple events on {doc_date} - needs AI")
+                    
+            except Exception as e:
+                logger.warning(f"Date-linking failed for '{doc['title']}': {e}")
+        
+        logger.info(f"AI analysis queue: Phase 1 complete - {linked_count} documents linked by date")
+        return linked_count
+
+    async def _create_event_from_document(self, conn, doc: dict) -> Optional[int]:
+        """
+        Create an event from an agenda, minutes, or video document.
+        
+        Extracts meeting info from the document title and creates a new event.
+        Returns the event ID if successful, None otherwise.
+        """
+        title = doc["title"]
+        meeting_date = doc["meeting_date"]
+        source_id = doc["source_id"]
+        
+        # Parse event title from document title
+        # Examples: "Regular Council Meeting - Agenda", "Planning Commission - Minutes"
+        #           "Twinsburg Board of Education Meeting - May 21, 2025 - Video"
+        event_title = title
+        
+        # Remove common suffixes (including video)
+        for suffix in [" - Agenda", " - Minutes", " - Video", " Agenda", " Minutes", " Video", 
+                       " - agenda", " - minutes", " - video"]:
+            if event_title.endswith(suffix):
+                event_title = event_title[:-len(suffix)]
+                break
+        
+        # Remove date patterns that might be in the title
+        import re
+        # "- May 21, 2025" or "- 5/21/2025" or "1/12/2025"
+        event_title = re.sub(r'\s*-?\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*$', '', event_title)
+        event_title = re.sub(r'\s*-?\s*\w+ \d{1,2},? \d{4}\s*$', '', event_title)
+        # Also handle "May 21, 2025" without dash
+        event_title = re.sub(r'\s*-?\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\s*$', '', event_title, flags=re.IGNORECASE)
+        
+        event_title = event_title.strip()
+        # Remove trailing dash if present
+        event_title = event_title.rstrip(' -').strip()
+        
+        if not event_title:
+            event_title = "Meeting"
+        
+        # Determine category from title
+        category = None
+        title_lower = event_title.lower()
+        if "council" in title_lower:
+            category = "city_council"
+        elif "planning" in title_lower:
+            category = "planning_commission"
+        elif "zoning" in title_lower:
+            category = "zoning_board"
+        elif "school" in title_lower or "education" in title_lower or "board of education" in title_lower:
+            category = "school_board"
+        elif "finance" in title_lower:
+            category = "finance_committee"
+        elif "parks" in title_lower or "recreation" in title_lower:
+            category = "parks_recreation"
+        elif "committee" in title_lower:
+            category = "committee"
+        else:
+            category = "meeting"
+        
+        # Use the meeting date as-is (don't assume a time)
+        from datetime import datetime
+        if hasattr(meeting_date, 'date'):
+            start_time = meeting_date
+        else:
+            # It's a date object, convert to datetime at midnight
+            start_time = datetime.combine(meeting_date, datetime.min.time())
+        
+        try:
+            # Create the event
+            row = await conn.fetchrow("""
+                INSERT INTO events (title, start_time, category, created_at, updated_at)
+                VALUES ($1, $2, $3, NOW(), NOW())
+                RETURNING id
+            """, event_title, start_time, category)
+            
+            event_id = row["id"]
+            
+            # Link the event to the source
+            await conn.execute("""
+                INSERT INTO event_sources (event_id, source_id, first_seen_at, last_seen_at)
+                VALUES ($1, $2, NOW(), NOW())
+                ON CONFLICT (event_id, source_id) DO NOTHING
+            """, event_id, source_id)
+            
+            logger.info(f"Created event '{event_title}' on {start_time.date()} from document")
+            return event_id
+            
+        except Exception as e:
+            logger.warning(f"Failed to create event from document '{title}': {e}")
+            return None
+
+    async def _process_ai_linking(self, conn, batch_size: int) -> int:
+        """
+        Phase 2: Link documents using AI (for docs with summaries but no date match).
+        """
+        if not self.ai_processor or not self.ai_processor.enabled:
+            return 0
+        
+        docs = await conn.fetch("""
+            SELECT d.id, d.title, d.document_type, d.ai_summary, d.meeting_date, d.source_id,
+                   d.linking_status, d.linking_attempts
+            FROM documents d
+            LEFT JOIN event_documents ed ON d.id = ed.document_id
+            WHERE ed.document_id IS NULL
+              AND (d.linking_status IS NULL OR d.linking_status IN ('pending', 'needs_summary'))
+              AND d.ai_summary IS NOT NULL AND d.ai_summary != ''
+            ORDER BY d.created_at DESC
+            LIMIT $1
+        """, batch_size)
+        
+        if not docs:
+            logger.debug("AI analysis queue: No documents pending AI linking")
+            return 0
+        
+        logger.info(f"AI analysis queue: Phase 2 - AI-linking {len(docs)} documents")
+        linked_count = 0
+        
+        for doc in docs:
+            try:
+                attempts = (doc.get("linking_attempts") or 0) + 1
+                meeting_date = doc["meeting_date"] or datetime.now()
+                
+                # Get nearby events
+                events = await conn.fetch("""
+                    SELECT e.id, e.title, e.start_time, e.category
+                    FROM events e
+                    JOIN event_sources es ON e.id = es.event_id
+                    WHERE es.source_id = $1
+                      AND e.start_time BETWEEN ($2::timestamp - INTERVAL '30 days') AND ($2::timestamp + INTERVAL '30 days')
+                    ORDER BY e.start_time DESC
+                    LIMIT 20
+                """, doc["source_id"], meeting_date)
+                
+                if not events:
+                    await conn.execute("""
+                        UPDATE documents 
+                        SET linking_status = 'pending_retry', linking_attempts = $2,
+                            linking_retry_after = NOW() + INTERVAL '1 hour'
+                        WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.debug(f"No nearby events for AI linking '{doc['title']}'")
+                    continue
+                
+                events_context = [
+                    {"id": e["id"], "title": e["title"], 
+                     "date": e["start_time"].isoformat() if e["start_time"] else None,
+                     "type": e["category"]}
+                    for e in events
+                ]
+                
+                matches = await self.ai_processor.find_related_events(
+                    document_title=doc["title"],
+                    document_type=doc["document_type"],
+                    document_summary=doc["ai_summary"],
+                    events=events_context,
+                )
+                
+                if matches:
+                    for match in matches:
+                        await self.db_pool.link_document_to_event(
+                            conn, doc["id"], match["event_id"],
+                            confidence=match.get("confidence", 0.5),
+                        )
+                    await conn.execute("""
+                        UPDATE documents SET linking_status = 'linked', linking_attempts = $2 WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.info(f"AI-linked '{doc['title']}' to {len(matches)} event(s)")
+                    linked_count += 1
+                else:
+                    if attempts >= 3:
+                        await conn.execute("""
+                            UPDATE documents SET linking_status = 'blocked', linking_attempts = $2 WHERE id = $1
+                        """, doc["id"], attempts)
+                        logger.info(f"Blocked '{doc['title']}' after {attempts} attempts")
+                    else:
+                        await conn.execute("""
+                            UPDATE documents 
+                            SET linking_status = 'pending_retry', linking_attempts = $2,
+                                linking_retry_after = NOW() + INTERVAL '1 hour'
+                            WHERE id = $1
+                        """, doc["id"], attempts)
+                        
+            except Exception as e:
+                logger.warning(f"AI linking failed for '{doc['title']}': {e}")
+        
+        logger.info(f"AI analysis queue: Phase 2 complete - {linked_count} documents AI-linked")
+        return linked_count
+
     async def _process_document_linking(self, conn, batch_size: int) -> int:
         """Link documents to events. Returns count of docs processed.
         
@@ -755,8 +1149,16 @@ class Worker:
                 logger.info(f"Processing doc '{doc['title']}' (source={doc['source_id']}, date={meeting_date}): found {len(events)} nearby events")
                 
                 if not events:
-                    # No events to link to - skip for now (will retry later)
-                    logger.info(f"No nearby events for '{doc['title']}' - will retry later")
+                    # No events to link to - mark for retry later (maybe events will be scraped later)
+                    # Set retry_after to 1 hour from now so we move on to other documents
+                    await conn.execute("""
+                        UPDATE documents 
+                        SET linking_status = 'pending_retry', 
+                            linking_attempts = $2,
+                            linking_retry_after = NOW() + INTERVAL '1 hour'
+                        WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.info(f"No nearby events for '{doc['title']}' - marked for retry in 1 hour")
                     continue
                 
                 # First try: exact date match with title/category matching
@@ -928,9 +1330,18 @@ class Worker:
         return linked_count
 
     async def _process_event_summaries(self, conn, batch_size: int) -> None:
-        """Generate AI summaries for events that have linked documents."""
+        """Generate AI summaries for events that have linked documents.
+        
+        Respects ai_summary_max_age_days setting to skip old events.
+        """
+        # Build age filter if configured
+        max_age_days = self.settings.ai_summary_max_age_days
+        age_filter = ""
+        if max_age_days > 0:
+            age_filter = f"AND e.start_time >= NOW() - INTERVAL '{max_age_days} days'"
+        
         # Find events that need summaries and have properly linked documents
-        events = await conn.fetch("""
+        events = await conn.fetch(f"""
             SELECT DISTINCT e.id, e.title, e.start_time, e.category
             FROM events e
             JOIN event_documents ed ON e.id = ed.event_id
@@ -939,12 +1350,16 @@ class Worker:
               AND d.ai_summary IS NOT NULL
               AND d.ai_summary != ''
               AND ed.relationship NOT IN ('none', 'unlinked')
+              {age_filter}
             ORDER BY e.start_time DESC
             LIMIT $1
         """, batch_size)
         
         if not events:
-            logger.debug("AI analysis queue: No events pending summaries")
+            if max_age_days > 0:
+                logger.debug(f"AI analysis queue: No events pending summaries (within {max_age_days} days)")
+            else:
+                logger.debug("AI analysis queue: No events pending summaries")
             return
         
         logger.info(f"AI analysis queue: Processing {len(events)} event summaries")

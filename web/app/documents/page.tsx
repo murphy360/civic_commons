@@ -42,6 +42,8 @@ async function getDocuments(filter: FilterType): Promise<Document[]> {
         WHERE NOT EXISTS (
           SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id
         )
+        AND d.document_type NOT IN ('legislation', 'ordinance', 'resolution')
+        AND s.name NOT LIKE '%Legislation%'
         ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
         LIMIT 100
       `;
@@ -64,6 +66,8 @@ async function getDocuments(filter: FilterType): Promise<Document[]> {
         WHERE EXISTS (
           SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id
         )
+        AND d.document_type NOT IN ('legislation', 'ordinance', 'resolution')
+        AND s.name NOT LIKE '%Legislation%'
         ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
         LIMIT 100
       `;
@@ -83,6 +87,8 @@ async function getDocuments(filter: FilterType): Promise<Document[]> {
           (SELECT COUNT(*) FROM event_documents ed WHERE ed.document_id = d.id)::int as event_count
         FROM documents d
         JOIN sources s ON d.source_id = s.id
+        WHERE d.document_type NOT IN ('legislation', 'ordinance', 'resolution')
+        AND s.name NOT LIKE '%Legislation%'
         ORDER BY d.published_date DESC NULLS LAST, d.created_at DESC
         LIMIT 100
       `;
@@ -178,6 +184,12 @@ export default async function DocumentsPage({
               className="transition-colors hover:text-foreground/80 text-foreground"
             >
               Documents
+            </Link>
+            <Link
+              href="/legislation"
+              className="transition-colors hover:text-foreground/80 text-foreground/60"
+            >
+              Legislation
             </Link>
             <Link
               href="/newsletters"

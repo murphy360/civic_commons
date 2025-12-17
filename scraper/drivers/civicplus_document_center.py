@@ -292,13 +292,24 @@ class CivicPlusDocumentCenterDriver(BaseDriver):
         
         # Determine document type
         doc_type = DocumentType.OTHER
+        title_lower = title.lower()
+        
         if document_type_str == "legislation":
-            if "ordinance" in title.lower() or "ord" in title.lower():
-                doc_type = DocumentType.OTHER  # Could add ORDINANCE type
-            elif "resolution" in title.lower() or "res" in title.lower():
-                doc_type = DocumentType.OTHER  # Could add RESOLUTION type
+            # Check for specific legislation types
+            if "resolution" in title_lower or title_lower.startswith("res "):
+                doc_type = DocumentType.RESOLUTION
+            elif "ordinance" in title_lower or title_lower.startswith("ord "):
+                doc_type = DocumentType.ORDINANCE
+            elif ordinance_number:
+                # Documents with number pattern (e.g., "34-24: ...") are typically ordinances
+                doc_type = DocumentType.ORDINANCE
             else:
-                doc_type = DocumentType.OTHER
+                # Default legislation to ordinance (most common)
+                doc_type = DocumentType.ORDINANCE
+        elif "ordinance" in title_lower:
+            doc_type = DocumentType.ORDINANCE
+        elif "resolution" in title_lower:
+            doc_type = DocumentType.RESOLUTION
         
         # Parse date if available
         published_at = None

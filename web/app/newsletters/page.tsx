@@ -119,6 +119,12 @@ export default async function NewslettersPage() {
               Documents
             </Link>
             <Link
+              href="/legislation"
+              className="transition-colors hover:text-foreground/80 text-foreground/60"
+            >
+              Legislation
+            </Link>
+            <Link
               href="/newsletters"
               className="transition-colors hover:text-foreground/80 text-foreground"
             >

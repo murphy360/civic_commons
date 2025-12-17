@@ -61,6 +61,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       AI_QUEUE_INTERVAL_SECONDS: ${AI_QUEUE_INTERVAL_SECONDS:-30}
       AI_QUEUE_BATCH_SIZE: ${AI_QUEUE_BATCH_SIZE:-1}
+      AI_SUMMARY_MAX_AGE_DAYS: ${AI_SUMMARY_MAX_AGE_DAYS:-0}
     volumes:
       - ./configs:/app/configs:ro
       - scraper_data:/data
@@ -136,6 +137,7 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       AI_QUEUE_INTERVAL_SECONDS: ${AI_QUEUE_INTERVAL_SECONDS:-30}
       AI_QUEUE_BATCH_SIZE: ${AI_QUEUE_BATCH_SIZE:-1}
+      AI_SUMMARY_MAX_AGE_DAYS: ${AI_SUMMARY_MAX_AGE_DAYS:-0}
     networks:
       - civic_network
 
