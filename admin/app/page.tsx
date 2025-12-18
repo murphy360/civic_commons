@@ -3,6 +3,7 @@ import Link from 'next/link';
 import SourceStatusTable from './components/SourceStatusTable';
 import NewsletterManager from './components/NewsletterManager';
 import AutoRefresh from './components/AutoRefresh';
+import { LocalTime } from './components/LocalTime';
 
 export const dynamic = 'force-dynamic';
 
@@ -261,8 +262,7 @@ async function getSources(): Promise<SourceStatus[]> {
 
 async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
   try {
-    // Get last 5 AI-processed items by meeting date (newest content first)
-    // This prioritizes recent/upcoming meetings over old restored data
+    // Get last 5 AI-processed items by ai_summary_updated_at (when AI actually processed them)
     const items = await sql<Array<{
       id: number;
       type: 'document' | 'event';
@@ -278,11 +278,11 @@ async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
           title,
           document_type as doc_type,
           meeting_date,
-          updated_at
+          ai_summary_updated_at as updated_at
         FROM documents
         WHERE ai_summary IS NOT NULL AND ai_summary != ''
-          AND meeting_date IS NOT NULL
-        ORDER BY meeting_date DESC
+          AND ai_summary_updated_at IS NOT NULL
+        ORDER BY ai_summary_updated_at DESC
         LIMIT 5
       )
       UNION ALL
@@ -293,14 +293,14 @@ async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
           title,
           NULL as doc_type,
           start_time as meeting_date,
-          updated_at
+          ai_summary_updated_at as updated_at
         FROM events
         WHERE ai_summary IS NOT NULL
-          AND start_time IS NOT NULL
-        ORDER BY start_time DESC
+          AND ai_summary_updated_at IS NOT NULL
+        ORDER BY ai_summary_updated_at DESC
         LIMIT 5
       )
-      ORDER BY meeting_date DESC NULLS LAST
+      ORDER BY updated_at DESC
       LIMIT 5
     `;
     return items;
@@ -628,7 +628,7 @@ export default async function AdminDashboard() {
                       </div>
                     </div>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
-                      {new Date(item.updated_at).toLocaleTimeString()}
+                      <LocalTime date={item.updated_at} />
                     </span>
                   </div>
                 ))}

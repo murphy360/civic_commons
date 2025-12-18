@@ -528,7 +528,7 @@ class Worker:
             SELECT id, title, document_type, content_markdown, local_path, source_url, linking_status, meeting_date
             FROM documents
             WHERE (ai_summary IS NULL OR ai_summary = '')
-              AND local_path IS NOT NULL
+              AND (local_path IS NOT NULL OR (document_type = 'video' AND source_url LIKE '%youtu%'))
               {age_filter}
             ORDER BY 
                 -- Primary: Newest dates first (highest epoch timestamp)

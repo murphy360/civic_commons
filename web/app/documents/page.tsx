@@ -100,6 +100,25 @@ async function getDocuments(filter: FilterType): Promise<Document[]> {
   }
 }
 
+async function getDocumentCounts(): Promise<{ total: number; linked: number; unlinked: number }> {
+  try {
+    const result = await sql<{ total: number; linked: number; unlinked: number }[]>`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(CASE WHEN EXISTS (SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id) THEN 1 END)::int as linked,
+        COUNT(CASE WHEN NOT EXISTS (SELECT 1 FROM event_documents ed WHERE ed.document_id = d.id) THEN 1 END)::int as unlinked
+      FROM documents d
+      JOIN sources s ON d.source_id = s.id
+      WHERE d.document_type NOT IN ('legislation', 'ordinance', 'resolution')
+        AND s.name NOT LIKE '%Legislation%'
+    `;
+    return result[0] || { total: 0, linked: 0, unlinked: 0 };
+  } catch (error) {
+    console.error('Failed to fetch document counts:', error);
+    return { total: 0, linked: 0, unlinked: 0 };
+  }
+}
+
 function formatDate(date: Date | null): string {
   if (!date) return 'Unknown date';
   return new Date(date).toLocaleDateString('en-US', {
@@ -159,8 +178,11 @@ export default async function DocumentsPage({
   searchParams: Promise<{ filter?: string }>;
 }) {
   const params = await searchParams;
-  const filter = (params.filter as FilterType) || 'unlinked';
-  const documents = await getDocuments(filter);
+  const filter = (params.filter as FilterType) || 'all';
+  const [documents, counts] = await Promise.all([
+    getDocuments(filter),
+    getDocumentCounts(),
+  ]);
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -186,6 +208,12 @@ export default async function DocumentsPage({
               Documents
             </Link>
             <Link
+              href="/videos"
+              className="transition-colors hover:text-foreground/80 text-foreground/60"
+            >
+              Videos
+            </Link>
+            <Link
               href="/legislation"
               className="transition-colors hover:text-foreground/80 text-foreground/60"
             >
@@ -209,43 +237,68 @@ export default async function DocumentsPage({
 
       {/* Main Content */}
       <main className="container py-8">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-          <h1 className="text-3xl font-bold">Documents</h1>
-          
-          {/* Filter buttons */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground mr-2">Show:</span>
-            <Link
-              href="/documents?filter=unlinked"
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                filter === 'unlinked'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted hover:bg-muted/80 text-muted-foreground'
-              }`}
-            >
-              Unlinked
-            </Link>
-            <Link
-              href="/documents?filter=linked"
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                filter === 'linked'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted hover:bg-muted/80 text-muted-foreground'
-              }`}
-            >
-              Linked
-            </Link>
-            <Link
-              href="/documents?filter=all"
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                filter === 'all'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted hover:bg-muted/80 text-muted-foreground'
-              }`}
-            >
-              All
-            </Link>
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold">Documents</h1>
+            <p className="text-muted-foreground mt-1">
+              Meeting minutes, agendas, and official documents
+            </p>
           </div>
+        </div>
+
+        {/* Filter Tabs */}
+        <div className="flex items-center gap-1 border-b mb-6">
+          <Link
+            href="/documents?filter=all"
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              filter === 'all'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30'
+            }`}
+          >
+            All Documents
+            <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+              filter === 'all' 
+                ? 'bg-primary/10 text-primary' 
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {counts.total}
+            </span>
+          </Link>
+          <Link
+            href="/documents?filter=linked"
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              filter === 'linked'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30'
+            }`}
+          >
+            Linked to Events
+            <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+              filter === 'linked' 
+                ? 'bg-primary/10 text-primary' 
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {counts.linked}
+            </span>
+          </Link>
+          <Link
+            href="/documents?filter=unlinked"
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              filter === 'unlinked'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30'
+            }`}
+          >
+            Unlinked
+            <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+              filter === 'unlinked' 
+                ? 'bg-primary/10 text-primary' 
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {counts.unlinked}
+            </span>
+          </Link>
         </div>
         
         {documents.length === 0 ? (

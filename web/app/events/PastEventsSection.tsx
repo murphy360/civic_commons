@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import EventFilters, { type FilterState } from './EventFilters';
 
 interface Event {
   id: number;
@@ -224,10 +225,75 @@ function MonthGroupSection({
 interface PastEventsSectionProps {
   initialEvents: Event[];
   totalCount: number;
+  availableSources: string[];
 }
 
-export default function PastEventsSection({ initialEvents, totalCount }: PastEventsSectionProps) {
+// Helper to check if event matches filters
+function eventMatchesFilters(event: Event, filters: FilterState): boolean {
+  // Search filter
+  if (filters.search) {
+    const searchLower = filters.search.toLowerCase();
+    const titleMatch = event.title.toLowerCase().includes(searchLower);
+    const descMatch = event.description?.toLowerCase().includes(searchLower);
+    const sourceMatch = event.source_names.toLowerCase().includes(searchLower);
+    if (!titleMatch && !descMatch && !sourceMatch) return false;
+  }
+  
+  // Source filter
+  if (filters.sources.length > 0) {
+    const eventSources = event.source_names.split(', ');
+    const hasMatchingSource = eventSources.some(s => filters.sources.includes(s));
+    if (!hasMatchingSource) return false;
+  }
+  
+  // Document filter
+  if (filters.hasDocuments === true && event.document_count === 0) return false;
+  
+  // Video filter
+  if (filters.hasVideo === true && !event.video_url) return false;
+  
+  // AI Summary filter
+  if (filters.hasAISummary === true && !event.has_ai_summary) return false;
+  
+  // Date range filter
+  if (filters.dateRange !== 'all') {
+    const eventDate = new Date(event.start_time);
+    const now = new Date();
+    let cutoffDate: Date;
+    
+    switch (filters.dateRange) {
+      case '7days':
+        cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case '30days':
+        cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case '90days':
+        cutoffDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        break;
+      case 'year':
+        cutoffDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        cutoffDate = new Date(0);
+    }
+    
+    if (eventDate < cutoffDate) return false;
+  }
+  
+  return true;
+}
+
+export default function PastEventsSection({ initialEvents, totalCount, availableSources }: PastEventsSectionProps) {
   const [events, setEvents] = useState<Event[]>(initialEvents);
+  const [filters, setFilters] = useState<FilterState>({
+    search: '',
+    sources: [],
+    hasDocuments: null,
+    hasVideo: null,
+    hasAISummary: null,
+    dateRange: 'all',
+  });
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(() => {
     // Expand the most recent month by default
     if (initialEvents.length > 0) {
@@ -239,7 +305,12 @@ export default function PastEventsSection({ initialEvents, totalCount }: PastEve
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(initialEvents.length < totalCount);
   
-  const monthGroups = groupEventsByMonth(events);
+  // Filter events client-side
+  const filteredEvents = useMemo(() => {
+    return events.filter(event => eventMatchesFilters(event, filters));
+  }, [events, filters]);
+  
+  const monthGroups = groupEventsByMonth(filteredEvents);
   
   const toggleMonth = useCallback((key: string) => {
     setExpandedMonths(prev => {
@@ -292,12 +363,9 @@ export default function PastEventsSection({ initialEvents, totalCount }: PastEve
   
   return (
     <section>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold text-muted-foreground">
           Past Events
-          <span className="text-sm font-normal ml-2">
-            ({events.length}{hasMore ? `+ of ${totalCount}` : ''})
-          </span>
         </h2>
         <div className="flex gap-2">
           <button
@@ -316,16 +384,43 @@ export default function PastEventsSection({ initialEvents, totalCount }: PastEve
         </div>
       </div>
       
-      <div className="space-y-4">
-        {monthGroups.map((group) => (
-          <MonthGroupSection
-            key={group.key}
-            group={group}
-            isExpanded={expandedMonths.has(group.key)}
-            onToggle={() => toggleMonth(group.key)}
-          />
-        ))}
-      </div>
+      {/* Filters */}
+      <EventFilters
+        availableSources={availableSources}
+        onFilterChange={setFilters}
+        totalCount={events.length}
+        filteredCount={filteredEvents.length}
+      />
+      
+      {filteredEvents.length === 0 ? (
+        <div className="text-center py-8 border rounded-lg bg-muted/20">
+          <p className="text-muted-foreground">No events match your filters.</p>
+          <button
+            onClick={() => setFilters({
+              search: '',
+              sources: [],
+              hasDocuments: null,
+              hasVideo: null,
+              hasAISummary: null,
+              dateRange: 'all',
+            })}
+            className="text-sm text-primary hover:underline mt-2"
+          >
+            Clear all filters
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {monthGroups.map((group) => (
+            <MonthGroupSection
+              key={group.key}
+              group={group}
+              isExpanded={expandedMonths.has(group.key)}
+              onToggle={() => toggleMonth(group.key)}
+            />
+          ))}
+        </div>
+      )}
       
       {hasMore && (
         <div className="mt-8 text-center">
