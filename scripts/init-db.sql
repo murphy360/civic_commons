@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS events (
     video_url TEXT,                    -- Recording URL (YouTube, Vimeo, etc.)
     ai_summary TEXT,                   -- AI-generated overview of the event
     ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
+    ai_model_used VARCHAR(64),         -- AI model used to generate the summary
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
@@ -126,12 +127,15 @@ CREATE TABLE IF NOT EXISTS documents (
     mime_type VARCHAR(128),            -- MIME type of the file
     ai_summary TEXT,                   -- AI-generated summary of the document
     ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
+    ai_model_used VARCHAR(64),         -- AI model used to generate the summary
     published_date TIMESTAMP,          -- When the document was published/uploaded
     meeting_date TIMESTAMP,            -- Date of the meeting this document is for (for linking)
     -- Linking status tracking
     linking_status VARCHAR(32),        -- NULL=new, 'pending', 'pending_retry', 'linked', 'blocked'
     linking_attempts INTEGER DEFAULT 0, -- Number of linking attempts
     linking_retry_after TIMESTAMP,     -- When to retry linking
+    -- AI summary priority (for user-initiated priority)
+    summary_priority TIMESTAMP,        -- Higher (more recent) values processed first in AI queue
     raw_data JSONB,
     search_vector TSVECTOR,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
@@ -145,6 +149,7 @@ CREATE INDEX IF NOT EXISTS documents_meeting_date_idx ON documents(meeting_date)
 CREATE INDEX IF NOT EXISTS documents_external_id_idx ON documents(source_id, external_id);
 CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS documents_linking_status_idx ON documents(linking_status);
+CREATE INDEX IF NOT EXISTS documents_summary_priority_idx ON documents(summary_priority DESC NULLS LAST);
 
 -- =============================================================================
 -- Event-Document Association
@@ -268,37 +273,90 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =============================================================================
--- Newsletters (AI-generated periodic summaries)
+-- Summaries (Cascading AI-generated summaries: event → daily → weekly → etc.)
 -- =============================================================================
-CREATE TABLE IF NOT EXISTS newsletters (
+CREATE TABLE IF NOT EXISTS summaries (
     id SERIAL PRIMARY KEY,
     city_id VARCHAR(64) NOT NULL,
-    title VARCHAR(512) NOT NULL,
-    period_type VARCHAR(32) NOT NULL,  -- 'daily', 'weekly', 'monthly', 'quarterly', 'annual'
-    period_start TIMESTAMP NOT NULL,   -- Start of the period covered
-    period_end TIMESTAMP NOT NULL,     -- End of the period covered
-    status VARCHAR(32) DEFAULT 'pending' NOT NULL, -- 'pending', 'generating', 'completed', 'failed'
-    summary_text TEXT,                 -- AI-generated markdown summary
-    pdf_path TEXT,                     -- Local path to generated PDF
-    pdf_url TEXT,                      -- Public URL to the PDF
-    event_count INTEGER DEFAULT 0,     -- Number of events included
-    document_count INTEGER DEFAULT 0,  -- Number of documents referenced
+    
+    -- What this summary covers
+    summary_type VARCHAR(32) NOT NULL,  -- 'event', 'daily', 'weekly', 'monthly', 'quarterly', 'annual'
+    period_start TIMESTAMP NOT NULL,    -- Start of the period covered
+    period_end TIMESTAMP NOT NULL,      -- End of the period covered
+    
+    -- For event summaries, link to the event
+    event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    
+    -- The generated content
+    title VARCHAR(512),
+    summary_text TEXT,                  -- AI-generated markdown summary
+    key_points JSONB,                   -- [{point: "...", category: "decision|discussion|announcement"}]
+    
+    -- Tracking completeness (primarily for event summaries)
+    documents_included INTEGER[],       -- Document IDs included in this summary
+    expected_document_types TEXT[],     -- ['agenda', 'minutes', 'video', 'packet']
+    completeness_score FLOAT,           -- 0.0 to 1.0 (how complete is the data)
+    
+    -- Child summary tracking (for daily/weekly/etc.)
+    child_summary_count INTEGER DEFAULT 0,  -- Number of child summaries included
+    
+    -- Versioning
+    version INTEGER DEFAULT 1,
+    previous_version_id INTEGER REFERENCES summaries(id),
+    
+    -- Generation status
+    status VARCHAR(32) DEFAULT 'pending' NOT NULL, -- 'pending', 'generating', 'completed', 'failed', 'stale'
+    is_stale BOOLEAN DEFAULT false,     -- Marked for regeneration
+    
+    -- Generation metadata
+    generation_triggered_by VARCHAR(64), -- 'document_added', 'child_updated', 'scheduled', 'manual'
+    triggered_by_id INTEGER,             -- ID of document/summary that triggered regeneration
     generation_started_at TIMESTAMP,
     generation_completed_at TIMESTAMP,
+    token_count INTEGER,                 -- Track AI token usage
+    model_used VARCHAR(64),              -- AI model used to generate this summary
     error_message TEXT,
-    metadata JSONB,                    -- Additional data (featured events, highlights, etc.)
+    
+    -- Legacy fields for backwards compatibility
+    pdf_path TEXT,
+    pdf_url TEXT,
+    
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS newsletters_city_id_idx ON newsletters(city_id);
-CREATE INDEX IF NOT EXISTS newsletters_period_type_idx ON newsletters(period_type);
-CREATE INDEX IF NOT EXISTS newsletters_period_start_idx ON newsletters(period_start);
-CREATE INDEX IF NOT EXISTS newsletters_status_idx ON newsletters(status);
-CREATE UNIQUE INDEX IF NOT EXISTS newsletters_unique_period_idx ON newsletters(city_id, period_type, period_start);
+-- Indexes for efficient querying
+CREATE INDEX IF NOT EXISTS summaries_city_type_idx ON summaries(city_id, summary_type);
+CREATE INDEX IF NOT EXISTS summaries_period_idx ON summaries(period_start, period_end);
+CREATE INDEX IF NOT EXISTS summaries_event_idx ON summaries(event_id) WHERE event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS summaries_status_idx ON summaries(status);
+CREATE INDEX IF NOT EXISTS summaries_stale_idx ON summaries(is_stale) WHERE is_stale = true;
 
-CREATE TRIGGER update_newsletters_updated_at BEFORE UPDATE ON newsletters
+-- Unique constraint for event summaries (one per event per city)
+CREATE UNIQUE INDEX IF NOT EXISTS summaries_event_unique_idx 
+    ON summaries(city_id, event_id) WHERE event_id IS NOT NULL;
+
+-- Unique constraint for period summaries (one per period type per city)
+CREATE UNIQUE INDEX IF NOT EXISTS summaries_period_unique_idx 
+    ON summaries(city_id, summary_type, period_start) WHERE event_id IS NULL;
+
+CREATE TRIGGER update_summaries_updated_at BEFORE UPDATE ON summaries
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================================================================
+-- Summary Triggers (audit trail for cascade regeneration)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS summary_triggers (
+    id SERIAL PRIMARY KEY,
+    summary_id INTEGER REFERENCES summaries(id) ON DELETE CASCADE,
+    triggered_by_summary_id INTEGER REFERENCES summaries(id) ON DELETE SET NULL,
+    triggered_by_document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+    trigger_reason VARCHAR(128),        -- 'document_added', 'document_updated', 'child_summary_updated'
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS summary_triggers_summary_idx ON summary_triggers(summary_id);
+CREATE INDEX IF NOT EXISTS summary_triggers_created_idx ON summary_triggers(created_at);
 
 -- =============================================================================
 -- Helper Functions for Event Deduplication

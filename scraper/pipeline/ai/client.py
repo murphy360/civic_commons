@@ -3,6 +3,11 @@ Gemini API client for AI-powered event processing.
 
 This module provides a reusable HTTP client for calling Google's Gemini API.
 It handles authentication, request formatting, and response parsing.
+
+Model Usage:
+- gemini-2.0-flash: Document summaries, event summaries (fast, cost-effective)
+- gemini-2.5-flash: Video analysis, weekly/monthly summaries (balanced)
+- gemini-2.5-pro: Complex reasoning, quarterly/annual summaries (deep thinking)
 """
 
 import logging
@@ -14,15 +19,35 @@ import httpx
 logger = logging.getLogger("civic.ai.client")
 
 
+# Gemini API base URL
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# Model endpoints
+MODELS = {
+    # Fast model for basic document/event summaries
+    "flash": f"{GEMINI_API_BASE}/gemini-2.0-flash:generateContent",
+    
+    # Balanced model for video analysis and weekly/monthly summaries  
+    "flash-2.5": f"{GEMINI_API_BASE}/gemini-2.5-flash:generateContent",
+    
+    # Advanced thinking model for complex quarterly summaries
+    "pro": f"{GEMINI_API_BASE}/gemini-2.5-pro:generateContent",
+    
+    # Gemini 3 Pro Preview for annual summaries (most comprehensive)
+    "pro-3": f"{GEMINI_API_BASE}/gemini-3-pro-preview:generateContent",
+    
+    # Chat agent model (Gemini 3 Pro preview)
+    "chat": f"{GEMINI_API_BASE}/gemini-3-pro-preview:generateContent",
+}
+
+
 class GeminiClient:
     """
     HTTP client for Gemini API.
     
     Handles connection management, authentication, and request/response formatting.
+    Supports multiple models for different use cases.
     """
-    
-    # Use gemini-2.0-flash which is available in the API
-    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -61,6 +86,7 @@ class GeminiClient:
         system_prompt: Optional[str] = None,
         temperature: float = 0.1,
         max_tokens: int = 1024,
+        model: str = "flash",
     ) -> Optional[str]:
         """
         Call Gemini API with a prompt.
@@ -70,6 +96,7 @@ class GeminiClient:
             system_prompt: Optional system instructions
             temperature: Sampling temperature (0.0-1.0, lower = more deterministic)
             max_tokens: Maximum tokens in response
+            model: Model to use - "flash" (2.0), "flash-2.5", or "pro" (2.5)
         
         Returns:
             Generated text response or None on error
@@ -77,7 +104,12 @@ class GeminiClient:
         if not self.api_key:
             return None
         
-        client = await self._get_client()
+        # Get the model URL
+        model_url = MODELS.get(model, MODELS["flash"])
+        
+        # Use longer timeout for pro model
+        timeout = 120.0 if model == "pro" else 60.0
+        client = httpx.AsyncClient(timeout=timeout)
         
         # Build the request contents
         contents = []
@@ -97,8 +129,9 @@ class GeminiClient:
         })
         
         try:
+            logger.debug(f"Using model: {model} -> {model_url}")
             response = await client.post(
-                f"{self.GEMINI_API_URL}?key={self.api_key}",
+                f"{model_url}?key={self.api_key}",
                 json={
                     "contents": contents,
                     "generationConfig": {
@@ -107,6 +140,7 @@ class GeminiClient:
                     }
                 }
             )
+            await client.aclose()
             response.raise_for_status()
             
             data = response.json()
@@ -130,7 +164,7 @@ class GeminiClient:
         """
         Call Gemini API with a YouTube video URL for analysis.
         
-        Gemini 2.0 Flash can analyze YouTube videos directly via URL.
+        Uses Gemini 2.5 Flash for video analysis capability.
         
         Args:
             prompt: The user prompt to send
@@ -145,7 +179,8 @@ class GeminiClient:
         if not self.api_key:
             return None
         
-        client = await self._get_client()
+        # Use flash-2.5 model for video analysis
+        model_url = MODELS["flash-2.5"]
         
         # Build the request contents with video
         contents = []
@@ -174,17 +209,18 @@ class GeminiClient:
         })
         
         try:
+            client = httpx.AsyncClient(timeout=120.0)  # Videos may take longer
             response = await client.post(
-                f"{self.GEMINI_API_URL}?key={self.api_key}",
+                f"{model_url}?key={self.api_key}",
                 json={
                     "contents": contents,
                     "generationConfig": {
                         "temperature": temperature,
                         "maxOutputTokens": max_tokens,
                     }
-                },
-                timeout=120.0  # Videos may take longer to process
+                }
             )
+            await client.aclose()
             response.raise_for_status()
             
             data = response.json()
@@ -203,6 +239,7 @@ class GeminiClient:
         system_prompt: Optional[str] = None,
         temperature: float = 0.1,
         max_tokens: int = 1024,
+        model: str = "flash",
     ) -> Optional[dict]:
         """
         Call Gemini API and parse response as JSON.
@@ -215,6 +252,7 @@ class GeminiClient:
             system_prompt: Optional system instructions (should request JSON output)
             temperature: Sampling temperature
             max_tokens: Maximum tokens in response
+            model: Model to use - "flash" (2.0), "flash-2.5", or "pro" (2.5)
             
         Returns:
             Parsed JSON as dict, or None on error
@@ -226,6 +264,7 @@ class GeminiClient:
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            model=model,
         )
         
         if not response:

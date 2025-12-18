@@ -7,20 +7,25 @@ between different AI processing phases.
 
 import logging
 import os
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 
 logger = logging.getLogger("civic.ai_queue")
+
+# Type alias for the cascade callback
+CascadeCallback = Callable[[int, int, str], Awaitable[None]]
 
 
 class AIQueueProcessor:
     """Processes the AI analysis queue in priority order."""
 
-    def __init__(self, db_pool, doc_summarizer, ai_processor, document_linker, settings):
+    def __init__(self, db_pool, doc_summarizer, ai_processor, document_linker, settings,
+                 on_document_processed: Optional[CascadeCallback] = None):
         self.db_pool = db_pool
         self.doc_summarizer = doc_summarizer
         self.ai_processor = ai_processor
         self.document_linker = document_linker
         self.settings = settings
+        self._on_document_processed = on_document_processed
 
     async def process_queue(self) -> None:
         """
@@ -148,7 +153,7 @@ class AIQueueProcessor:
                         """, validated_type, doc["id"])
                         logger.info(f"Corrected document type for '{doc['title']}': {doc['document_type']} -> {validated_type}")
 
-            summary = await self.doc_summarizer.generate_summary(
+            result = await self.doc_summarizer.generate_summary(
                 title=doc["title"],
                 document_type=validated_type,
                 content_text=doc["content_markdown"],
@@ -156,9 +161,27 @@ class AIQueueProcessor:
                 video_url=video_url,
             )
 
-            if summary:
-                await self.db_pool.update_document_ai_summary(conn, doc["id"], ai_summary=summary)
-                logger.info(f"AI summary generated for '{doc['title']}'")
+            if result:
+                await self.db_pool.update_document_ai_summary(
+                    conn, doc["id"], 
+                    ai_summary=result.text_with_footer,
+                    model_used=result.model_name,
+                )
+                logger.info(f"AI summary generated for '{doc['title']}' using {result.model_name}")
+
+                # Trigger cascade update if callback is set
+                if self._on_document_processed:
+                    event_id = await conn.fetchval("""
+                        SELECT event_id FROM event_documents WHERE document_id = $1 LIMIT 1
+                    """, doc["id"])
+                    if event_id:
+                        city_id = await conn.fetchval("""
+                            SELECT city_id FROM sources s
+                            JOIN documents d ON d.source_id = s.id
+                            WHERE d.id = $1
+                        """, doc["id"])
+                        if city_id:
+                            await self._on_document_processed(doc["id"], event_id, city_id)
 
                 # Extract legislation mentions (non-video only)
                 if validated_type != "video":

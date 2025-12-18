@@ -719,6 +719,7 @@ class DatabasePool:
         conn: asyncpg.Connection,
         document_id: int,
         ai_summary: str,
+        model_used: Optional[str] = None,
     ) -> None:
         """
         Update a document's AI-generated summary.
@@ -726,17 +727,20 @@ class DatabasePool:
         Args:
             document_id: Database ID of the document
             ai_summary: AI-generated summary text
+            model_used: Name of the AI model used (e.g., 'gemini-2.0-flash')
         """
         await conn.execute(
             """
             UPDATE documents SET
                 ai_summary = $1,
                 ai_summary_updated_at = $2,
+                ai_model_used = $3,
                 updated_at = $2
-            WHERE id = $3
+            WHERE id = $4
             """,
             ai_summary,
             datetime.utcnow(),
+            model_used,
             document_id,
         )
 

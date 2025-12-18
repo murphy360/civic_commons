@@ -7,6 +7,33 @@ This roadmap is derived from analyzing the project against the personas in `/per
 
 ---
 
+## ✅ RECENTLY COMPLETED
+
+### Cascading Summary System (December 2025)
+Replaced static newsletters with a dynamic, living summary system:
+
+```
+Document Added → Event Summary → Daily Summary → Weekly → Monthly → Quarterly → Annual
+```
+
+**Key Changes:**
+- `newsletters` table replaced with `summaries` table
+- Summaries auto-regenerate when new documents arrive
+- Completeness tracking shows data availability (0-100%)
+- Version history tracks how summaries evolve
+- `/newsletters` route now queries `summaries` table
+- New `/summaries` route with enhanced UI
+
+**Files Created/Modified:**
+- `scripts/init-db.sql` - New `summaries` + `summary_triggers` tables
+- `scraper/pipeline/ai/summary.py` - Summary generation logic
+- `scraper/pipeline/ai/cascade.py` - Cascade manager
+- `scraper/main.py` - Uses cascade system instead of newsletters
+- `web/app/newsletters/` - Updated to use summaries table
+- `web/app/summaries/` - New dedicated summaries UI
+
+---
+
 ## 🔴 CRITICAL: Blocking Issues (Fix Now)
 
 | # | Issue | Personas Affected | Effort | Status |
@@ -87,6 +114,7 @@ This roadmap is derived from analyzing the project against the personas in `/per
 | 17 | **Public Comment Deadlines** | Keisha | Highlight opportunities for civic participation | ⬜ Todo |
 | 18 | **New Resident Onboarding** | Jordan | "How local government works" guide | ⬜ Todo |
 | 19 | **Shareable Quote Links** | Maria, Keisha, Hal | Deep links to specific passages | ⬜ Todo |
+| 20 | **Gemini Usage Tracking** | Derek (Admin) | Track API calls, tokens, costs in admin dashboard | ⬜ Todo |
 
 ---
 

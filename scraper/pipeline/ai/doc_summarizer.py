@@ -8,12 +8,37 @@ and reused for event summaries to avoid repeated processing.
 
 import json
 import logging
-from typing import Optional
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, Tuple
 
-from .client import GeminiClient
+from .client import GeminiClient, MODELS
 from .pdf_extractor import extract_pdf_text
 
 logger = logging.getLogger("civic.ai.doc_summarizer")
+
+
+@dataclass
+class SummaryResult:
+    """Result from summary generation, including the model used."""
+    text: str
+    model: str  # Model key (e.g., 'flash', 'flash-2.5', 'pro')
+    
+    @property
+    def model_name(self) -> str:
+        """Get the full model name from the URL."""
+        url = MODELS.get(self.model, "")
+        # Extract model name from URL like ".../gemini-2.0-flash:generateContent"
+        if "/models/" in url:
+            return url.split("/models/")[1].split(":")[0]
+        return self.model
+    
+    @property
+    def text_with_footer(self) -> str:
+        """Get the summary text with a generation footer."""
+        today = datetime.now().strftime("%B %d, %Y")
+        footer = f"\n\n---\n*Generated: {today} by {self.model_name}*"
+        return self.text + footer
 
 
 # System prompt for meeting documents (agendas, minutes, packets)
@@ -146,7 +171,7 @@ class DocumentSummarizer:
         local_path: Optional[str] = None,
         video_url: Optional[str] = None,
         max_content_chars: int = 5000,
-    ) -> Optional[str]:
+    ) -> Optional[SummaryResult]:
         """
         Generate an AI summary of a document.
         
@@ -159,7 +184,7 @@ class DocumentSummarizer:
             max_content_chars: Maximum characters to send to AI
             
         Returns:
-            AI-generated summary or None on failure
+            SummaryResult with text and model info, or None on failure
         """
         if not self.enabled:
             logger.debug("AI not enabled - skipping document summary")
@@ -191,19 +216,21 @@ class DocumentSummarizer:
         # Build prompt
         prompt = self._build_prompt(title, document_type, content)
         
-        response = await self._client.generate(prompt, system_prompt)
+        # Use flash model for document summaries
+        model = "flash"
+        response = await self._client.generate(prompt, system_prompt, model=model)
         
         if response:
             summary = self._clean_response(response)
             logger.info(
                 f"Generated AI summary for document '{title}' "
-                f"({len(summary)} chars)"
+                f"({len(summary)} chars) using {model}"
             )
-            return summary
+            return SummaryResult(text=summary, model=model)
         
         return None
     
-    async def _summarize_video(self, title: str, video_url: str) -> Optional[str]:
+    async def _summarize_video(self, title: str, video_url: str) -> Optional[SummaryResult]:
         """
         Generate AI summary of a YouTube video using Gemini's video analysis.
         
@@ -212,7 +239,7 @@ class DocumentSummarizer:
             video_url: YouTube URL
             
         Returns:
-            AI-generated summary or None on failure
+            SummaryResult with text and model info, or None on failure
         """
         logger.info(f"Summarizing video: {title} ({video_url})")
         
@@ -229,6 +256,8 @@ I need you to capture what WON'T be in the official minutes:
 
 Help viewers decide if they should watch specific sections of this meeting."""
         
+        # Use flash-2.5 model for video analysis
+        model = "flash-2.5"
         response = await self._client.generate_with_video(
             prompt=prompt,
             video_url=video_url,
@@ -239,9 +268,9 @@ Help viewers decide if they should watch specific sections of this meeting."""
             summary = self._clean_response(response)
             logger.info(
                 f"Generated AI video summary for '{title}' "
-                f"({len(summary)} chars)"
+                f"({len(summary)} chars) using {model}"
             )
-            return summary
+            return SummaryResult(text=summary, model=model)
         
         logger.warning(f"Failed to generate video summary for '{title}'")
         return None

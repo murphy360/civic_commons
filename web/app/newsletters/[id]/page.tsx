@@ -2,26 +2,28 @@ import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { notFound } from 'next/navigation';
 import { Header } from '../../components/Header';
+import ReactMarkdown from 'react-markdown';
 
 export const dynamic = 'force-dynamic';
 
-interface Newsletter {
+interface Summary {
   id: number;
   city_id: string;
   title: string;
-  period_type: string;
+  summary_type: string;
   period_start: Date;
   period_end: Date;
   status: string;
   summary_text: string | null;
-  pdf_url: string | null;
-  event_count: number;
-  document_count: number;
-  metadata: Record<string, unknown> | null;
+  completeness_score: number | null;
+  version: number;
+  is_stale: boolean;
+  updated_at: Date;
   created_at: Date;
 }
 
 const PERIOD_LABELS: Record<string, string> = {
+  event: 'Event',
   daily: 'Daily',
   weekly: 'Weekly',
   monthly: 'Monthly',
@@ -30,6 +32,7 @@ const PERIOD_LABELS: Record<string, string> = {
 };
 
 const PERIOD_COLORS: Record<string, string> = {
+  event: 'bg-gray-100 text-gray-800',
   daily: 'bg-blue-100 text-blue-800',
   weekly: 'bg-green-100 text-green-800',
   monthly: 'bg-purple-100 text-purple-800',
@@ -37,25 +40,25 @@ const PERIOD_COLORS: Record<string, string> = {
   annual: 'bg-red-100 text-red-800',
 };
 
-async function getNewsletter(id: number): Promise<Newsletter | null> {
+async function getSummary(id: number): Promise<Summary | null> {
   try {
-    const newsletters = await sql<Newsletter[]>`
+    const summaries = await sql<Summary[]>`
       SELECT 
-        id, city_id, title, period_type, 
+        id, city_id, title, summary_type, 
         period_start, period_end, status,
-        summary_text, pdf_url,
-        event_count, document_count, metadata, created_at
-      FROM newsletters
+        summary_text, completeness_score,
+        version, is_stale, updated_at, created_at
+      FROM summaries
       WHERE id = ${id}
     `;
-    return newsletters[0] || null;
+    return summaries[0] || null;
   } catch (error) {
-    console.error('Failed to fetch newsletter:', error);
+    console.error('Failed to fetch summary:', error);
     return null;
   }
 }
 
-function formatDateRange(start: Date, end: Date, periodType: string): string {
+function formatDateRange(start: Date, end: Date, summaryType: string): string {
   const startDate = new Date(start);
   const endDate = new Date(end);
   
@@ -65,11 +68,11 @@ function formatDateRange(start: Date, end: Date, periodType: string): string {
     year: 'numeric'
   };
 
-  if (periodType === 'daily') {
+  if (summaryType === 'daily') {
     return startDate.toLocaleDateString('en-US', options);
   }
   
-  if (periodType === 'annual') {
+  if (summaryType === 'annual') {
     return `Year ${startDate.getFullYear()}`;
   }
 
@@ -78,23 +81,23 @@ function formatDateRange(start: Date, end: Date, periodType: string): string {
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const newsletter = await getNewsletter(parseInt(id, 10));
+  const summary = await getSummary(parseInt(id, 10));
   
-  if (!newsletter) {
-    return { title: 'Newsletter Not Found' };
+  if (!summary) {
+    return { title: 'Summary Not Found' };
   }
 
   return {
-    title: newsletter.title,
-    description: `${PERIOD_LABELS[newsletter.period_type]} newsletter covering ${newsletter.event_count} events.`,
+    title: summary.title || `${PERIOD_LABELS[summary.summary_type]} Summary`,
+    description: `${PERIOD_LABELS[summary.summary_type]} summary of civic activities.`,
   };
 }
 
-export default async function NewsletterDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function SummaryDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const newsletter = await getNewsletter(parseInt(id, 10));
+  const summary = await getSummary(parseInt(id, 10));
 
-  if (!newsletter) {
+  if (!summary) {
     notFound();
   }
 
@@ -114,87 +117,67 @@ export default async function NewsletterDetailPage({ params }: { params: Promise
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-              Back to Newsletters
+              Back to Summaries
             </Link>
           </nav>
 
-          {/* Newsletter Header */}
+          {/* Summary Header */}
           <div className="mb-8">
             <div className="flex items-center gap-3 mb-4">
-              <span className={`px-3 py-1 rounded-full text-sm font-medium ${PERIOD_COLORS[newsletter.period_type]}`}>
-                {PERIOD_LABELS[newsletter.period_type]}
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${PERIOD_COLORS[summary.summary_type]}`}>
+                {PERIOD_LABELS[summary.summary_type]}
               </span>
               <span className="text-sm text-muted-foreground">
-                {formatDateRange(newsletter.period_start, newsletter.period_end, newsletter.period_type)}
+                {formatDateRange(summary.period_start, summary.period_end, summary.summary_type)}
               </span>
+              {summary.is_stale && (
+                <span className="px-2 py-1 rounded-full text-xs bg-yellow-100 text-yellow-800">
+                  Update Pending
+                </span>
+              )}
             </div>
-            <h1 className="text-3xl font-bold tracking-tight">{newsletter.title}</h1>
+            <h1 className="text-3xl font-bold tracking-tight">
+              {summary.title || formatDateRange(summary.period_start, summary.period_end, summary.summary_type)}
+            </h1>
             <div className="flex items-center gap-6 mt-4 text-sm text-muted-foreground">
               <span className="flex items-center gap-1">
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                {newsletter.event_count} events covered
+                Updated {new Date(summary.updated_at).toLocaleDateString('en-US', { 
+                  month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
+                })}
               </span>
-              <span className="flex items-center gap-1">
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                {newsletter.document_count} documents referenced
-              </span>
+              <span>Version {summary.version}</span>
+              {summary.completeness_score !== null && (
+                <span className="flex items-center gap-1">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  {Math.round(summary.completeness_score * 100)}% complete
+                </span>
+              )}
             </div>
           </div>
 
-          {/* PDF Download Button */}
-          {newsletter.pdf_url && (
-            <div className="mb-8">
-              <a
-                href={newsletter.pdf_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors"
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Download PDF
-              </a>
-            </div>
-          )}
-
-          {/* Newsletter Content */}
-          {newsletter.summary_text ? (
-            <article className="prose prose-neutral dark:prose-invert max-w-none">
-              <div 
-                className="bg-card rounded-lg border p-8"
-                dangerouslySetInnerHTML={{ 
-                  __html: newsletter.summary_text
-                    .replace(/\n\n/g, '</p><p>')
-                    .replace(/\n/g, '<br/>')
-                    .replace(/^/, '<p>')
-                    .replace(/$/, '</p>')
-                    .replace(/## (.*?)(<br\/>|<\/p>)/g, '</p><h2>$1</h2><p>')
-                    .replace(/### (.*?)(<br\/>|<\/p>)/g, '</p><h3>$1</h3><p>')
-                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-                }}
-              />
+          {/* Summary Content */}
+          {summary.summary_text ? (
+            <article className="prose prose-neutral dark:prose-invert max-w-none bg-card rounded-lg border p-8">
+              <ReactMarkdown>{summary.summary_text}</ReactMarkdown>
             </article>
           ) : (
             <div className="text-center py-12 bg-muted/50 rounded-lg">
-              <p className="text-muted-foreground">Newsletter content is being generated...</p>
+              <p className="text-muted-foreground">Summary content is being generated...</p>
             </div>
           )}
 
-          {/* Metadata Section */}
-          {newsletter.metadata && Object.keys(newsletter.metadata).length > 0 && (
-            <div className="mt-8 p-6 bg-muted/50 rounded-lg">
-              <h2 className="font-semibold mb-4">Additional Information</h2>
-              <pre className="text-sm text-muted-foreground overflow-auto">
-                {JSON.stringify(newsletter.metadata, null, 2)}
-              </pre>
-            </div>
-          )}
+          {/* Info Section */}
+          <div className="mt-8 p-4 bg-muted/50 rounded-lg text-sm text-muted-foreground">
+            <p>
+              This summary updates automatically as new information becomes available. 
+              When new documents are added to events within this period, the summary will be regenerated.
+            </p>
+          </div>
         </div>
       </main>
 

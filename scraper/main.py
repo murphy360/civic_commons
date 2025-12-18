@@ -23,7 +23,8 @@ from models import Event, Document
 from pipeline.storage import DatabasePool
 from pipeline.ai_processor import AIEventProcessor
 from pipeline.ai import DocumentSummarizer, GeminiClient
-from pipeline.ai.newsletter import NewsletterGenerator, PeriodType, get_period_dates, generate_newsletter_title
+from pipeline.ai.summary import SummaryGenerator, SummaryType, get_period_bounds
+from pipeline.ai.cascade import SummaryCascadeManager
 from pipeline.backfill import BackfillManager
 from pipeline.downloader import DocumentDownloader
 from pipeline.document_linker import DocumentLinker
@@ -63,7 +64,8 @@ class Worker:
         self.db_pool: DatabasePool | None = None
         self.ai_processor: Optional[AIEventProcessor] = None
         self.doc_summarizer: Optional[DocumentSummarizer] = None
-        self.newsletter_generator: Optional[NewsletterGenerator] = None
+        self.summary_generator: Optional[SummaryGenerator] = None
+        self.cascade_manager: Optional[SummaryCascadeManager] = None
         self.backfill_manager: Optional[BackfillManager] = None
         self.document_downloader: Optional[DocumentDownloader] = None
         self.document_linker: Optional[DocumentLinker] = None
@@ -88,7 +90,7 @@ class Worker:
             self.ai_processor = AIEventProcessor(api_key=gemini_key)
             gemini_client = GeminiClient(api_key=gemini_key)
             self.doc_summarizer = DocumentSummarizer(gemini_client)
-            self.newsletter_generator = NewsletterGenerator(gemini_client)
+            self.summary_generator = SummaryGenerator(gemini_client)
             logger.info("AI processors enabled")
         else:
             logger.info("AI processing disabled (no GEMINI_API_KEY)")
@@ -96,10 +98,11 @@ class Worker:
         # Initialize document linker
         self.document_linker = DocumentLinker(self.db_pool, self.ai_processor)
 
-        # Initialize AI queue processor
+        # Initialize AI queue processor (callback added later after cascade_manager is created)
         self.ai_queue = AIQueueProcessor(
             self.db_pool, self.doc_summarizer, self.ai_processor,
-            self.document_linker, self.settings
+            self.document_linker, self.settings,
+            on_document_processed=None  # Set after cascade_manager is initialized
         )
 
         # Initialize scraper executor
@@ -119,6 +122,13 @@ class Worker:
             batch_delay_seconds=backfill_delay,
         )
         logger.info(f"Backfill manager initialized ({backfill_months} months, {backfill_delay}s delay)")
+
+        # Initialize cascade manager for summary generation
+        if self.summary_generator and self.summary_generator.enabled:
+            self.cascade_manager = SummaryCascadeManager(self.db_pool, self.summary_generator)
+            # Connect cascade callback to AI queue
+            self.ai_queue._on_document_processed = self.on_document_processed
+            logger.info("Summary cascade manager initialized")
 
     async def shutdown(self) -> None:
         """Gracefully shutdown the worker."""
@@ -185,37 +195,21 @@ class Worker:
             replace_existing=True,
         )
 
-        # Schedule newsletters if enabled
-        if self.newsletter_generator and self.newsletter_generator.enabled:
-            self._schedule_newsletters()
+        # Schedule summary regeneration if enabled
+        if self.cascade_manager:
+            self._schedule_summary_jobs()
 
-    def _schedule_newsletters(self) -> None:
-        """Schedule newsletter generation jobs."""
+    def _schedule_summary_jobs(self) -> None:
+        """Schedule summary regeneration jobs."""
+        # Process stale summaries every 5 minutes
         self.scheduler.add_job(
-            self.generate_newsletter,
-            trigger=CronTrigger(hour=6, minute=0),
-            id="newsletter_daily",
-            name="Generate Daily Newsletter",
-            kwargs={"period_type": "daily"},
+            self.process_stale_summaries,
+            trigger=CronTrigger(minute="*/5"),
+            id="summary_regeneration",
+            name="Regenerate Stale Summaries",
             replace_existing=True,
         )
-        self.scheduler.add_job(
-            self.generate_newsletter,
-            trigger=CronTrigger(day_of_week="mon", hour=7, minute=0),
-            id="newsletter_weekly",
-            name="Generate Weekly Newsletter",
-            kwargs={"period_type": "weekly"},
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            self.generate_newsletter,
-            trigger=CronTrigger(day=1, hour=8, minute=0),
-            id="newsletter_monthly",
-            name="Generate Monthly Newsletter",
-            kwargs={"period_type": "monthly"},
-            replace_existing=True,
-        )
-        logger.info("Scheduled newsletter generation jobs")
+        logger.info("Scheduled summary regeneration job (every 5 min)")
 
     async def scrape_source(self, config, source, start_date=None, end_date=None, skip_queue_check=False):
         """Execute a scraping job."""
@@ -279,66 +273,41 @@ class Worker:
                         return config, source
         return None, None
 
-    async def generate_newsletter(self, period_type: str) -> None:
-        """Generate a newsletter for the given period."""
-        if not self.newsletter_generator or not self.newsletter_generator.enabled:
+    async def process_stale_summaries(self) -> None:
+        """Process summaries that have been marked as stale."""
+        if not self.cascade_manager:
             return
 
         try:
-            period = PeriodType(period_type)
-            start_date, end_date = get_period_dates(period)
-            title = generate_newsletter_title(period, end_date)
-
-            logger.info(f"Generating {period_type} newsletter: {title}")
-
-            async with self.db_pool.acquire() as conn:
-                # Check for existing newsletter
-                existing = await conn.fetchrow("""
-                    SELECT id FROM newsletters
-                    WHERE period_type = $1 AND period_start = $2 AND period_end = $3
-                """, period_type, start_date, end_date)
-
-                if existing:
-                    logger.info(f"Newsletter already exists for {period_type} {start_date}-{end_date}")
-                    return
-
-                # Fetch events for the period
-                events = await conn.fetch("""
-                    SELECT e.id, e.title, e.start_time, e.location, e.category,
-                           e.ai_summary, e.description
-                    FROM events e
-                    WHERE e.start_time >= $1 AND e.start_time < $2
-                    ORDER BY e.start_time
-                """, start_date, end_date)
-
-                if not events:
-                    logger.info(f"No events found for {period_type} newsletter")
-                    return
-
-                events_data = [
-                    {
-                        'id': e['id'], 'title': e['title'],
-                        'start_time': e['start_time'].isoformat() if e['start_time'] else None,
-                        'location': e['location'], 'category': e['category'],
-                        'ai_summary': e['ai_summary'], 'description': e['description'],
-                    }
-                    for e in events
-                ]
-
-                content = await self.newsletter_generator.generate(
-                    events=events_data, period=period, title=title,
-                    start_date=start_date, end_date=end_date,
-                )
-
-                if content:
-                    await conn.execute("""
-                        INSERT INTO newsletters (title, content, period_type, period_start, period_end)
-                        VALUES ($1, $2, $3, $4, $5)
-                    """, title, content, period_type, start_date, end_date)
-                    logger.info(f"Generated {period_type} newsletter: {title}")
-
+            result = await self.cascade_manager.regenerate_stale_summaries(max_count=5)
+            
+            if result.summaries_regenerated > 0:
+                logger.info(f"Regenerated {result.summaries_regenerated} stale summaries")
+            
+            if result.errors:
+                for error in result.errors:
+                    logger.error(f"Summary regeneration error: {error}")
+                    
         except Exception as e:
-            logger.error(f"Error generating {period_type} newsletter: {e}")
+            logger.error(f"Error processing stale summaries: {e}")
+
+    async def on_document_processed(self, document_id: int, event_id: int, city_id: str) -> None:
+        """Called after a document has been processed by AI - triggers cascade updates."""
+        if not self.cascade_manager:
+            return
+        
+        try:
+            result = await self.cascade_manager.on_document_added(
+                document_id=document_id,
+                event_id=event_id,
+                city_id=city_id,
+            )
+            
+            if result.summaries_marked_stale > 0:
+                logger.debug(f"Marked {result.summaries_marked_stale} summaries as stale for document {document_id}")
+                
+        except Exception as e:
+            logger.error(f"Error triggering cascade for document {document_id}: {e}")
 
     async def _initialize_all_sources(self, configs: list) -> None:
         """Initialize all sources in the database."""

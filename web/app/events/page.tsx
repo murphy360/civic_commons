@@ -23,10 +23,22 @@ interface Event {
   has_ai_summary: boolean;
 }
 
+interface Summary {
+  id: number;
+  title: string | null;
+  summary_type: string;
+  period_start: Date;
+  period_end: Date;
+  summary_text: string | null;
+  status: string;
+  model_used: string | null;
+}
+
 interface PastEventsData {
   events: Event[];
   total: number;
   availableSources: string[];
+  summaries: Summary[];
 }
 
 async function getUpcomingEvents(): Promise<Event[]> {
@@ -85,6 +97,17 @@ async function getPastEvents(): Promise<PastEventsData> {
     `;
     const availableSources = sourcesResult.map(r => r.name);
 
+    // Get annual, quarterly, monthly and weekly summaries (including pending)
+    const summaries = await sql<Summary[]>`
+      SELECT 
+        id, title, summary_type, period_start, period_end, summary_text, status, model_used
+      FROM summaries
+      WHERE summary_type IN ('annual', 'quarterly', 'monthly', 'weekly')
+        AND status IN ('completed', 'pending', 'generating')
+        AND period_start >= NOW() - INTERVAL '2 years'
+      ORDER BY period_start DESC
+    `;
+
     // Get initial batch of events
     const events = await sql<Event[]>`
       SELECT 
@@ -112,10 +135,10 @@ async function getPastEvents(): Promise<PastEventsData> {
       ORDER BY e.start_time DESC
       LIMIT 50
     `;
-    return { events, total, availableSources };
+    return { events, total, availableSources, summaries };
   } catch (error) {
     console.error('Failed to fetch past events:', error);
-    return { events: [], total: 0, availableSources: [] };
+    return { events: [], total: 0, availableSources: [], summaries: [] };
   }
 }
 
@@ -146,6 +169,16 @@ export default async function EventsPage() {
       : null,
   }));
 
+  const serializedSummaries = pastEventsData.summaries.map(summary => ({
+    ...summary,
+    period_start: typeof summary.period_start === 'string'
+      ? summary.period_start
+      : summary.period_start.toISOString(),
+    period_end: typeof summary.period_end === 'string'
+      ? summary.period_end
+      : summary.period_end.toISOString(),
+  }));
+
   return (
     <div className="flex flex-col min-h-screen">
       <Header />
@@ -160,6 +193,7 @@ export default async function EventsPage() {
             pastEvents={serializedPastEvents}
             pastTotalCount={pastEventsData.total}
             availableSources={pastEventsData.availableSources}
+            summaries={serializedSummaries}
           />
         </Suspense>
       </main>

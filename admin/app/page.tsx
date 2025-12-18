@@ -43,6 +43,7 @@ interface RecentAIProcessed {
   doc_type: string | null;
   meeting_date: Date | null;
   updated_at: Date;
+  model_used: string | null;
 }
 
 async function getStats() {
@@ -270,6 +271,7 @@ async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
       doc_type: string | null;
       meeting_date: Date | null;
       updated_at: Date;
+      model_used: string | null;
     }>>`
       (
         SELECT 
@@ -278,7 +280,8 @@ async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
           title,
           document_type as doc_type,
           meeting_date,
-          ai_summary_updated_at as updated_at
+          ai_summary_updated_at as updated_at,
+          ai_model_used as model_used
         FROM documents
         WHERE ai_summary IS NOT NULL AND ai_summary != ''
           AND ai_summary_updated_at IS NOT NULL
@@ -293,7 +296,8 @@ async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
           title,
           NULL as doc_type,
           start_time as meeting_date,
-          ai_summary_updated_at as updated_at
+          ai_summary_updated_at as updated_at,
+          ai_model_used as model_used
         FROM events
         WHERE ai_summary IS NOT NULL
           AND ai_summary_updated_at IS NOT NULL
@@ -623,6 +627,12 @@ export default async function AdminDashboard() {
                           <>
                             <span>•</span>
                             <span>{new Date(item.meeting_date).toLocaleDateString()}</span>
+                          </>
+                        )}
+                        {item.model_used && (
+                          <>
+                            <span>•</span>
+                            <span className="text-blue-600">{item.model_used}</span>
                           </>
                         )}
                       </div>

@@ -303,7 +303,8 @@ class DocumentLinker:
                 if linked:
                     linked_count += 1
             except Exception as e:
-                logger.warning(f"AI linking failed for '{doc['title']}': {e}")
+                import traceback
+                logger.warning(f"AI linking failed for '{doc['title']}': {e}\n{traceback.format_exc()}")
 
         logger.info(f"AI-linking complete - {linked_count} documents linked")
         return linked_count
@@ -324,6 +325,18 @@ class DocumentLinker:
         """, doc["source_id"], meeting_date)
 
         if not events:
+            # No events found - create one if this is a video, agenda, or minutes
+            if doc["document_type"] in ("agenda", "minutes", "video"):
+                event_id = await self._create_event_from_document(conn, doc)
+                if event_id:
+                    await self.db_pool.link_document_to_event(conn, doc["id"], event_id)
+                    await conn.execute("""
+                        UPDATE documents SET linking_status = 'linked', linking_attempts = $2 WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.info(f"AI-link: Created event from '{doc['title']}' and linked")
+                    return True
+            
+            # Mark for retry if we couldn't create an event
             await conn.execute("""
                 UPDATE documents 
                 SET linking_status = 'pending_retry', linking_attempts = $2,
@@ -332,12 +345,18 @@ class DocumentLinker:
             """, doc["id"], attempts)
             return False
 
-        events_context = [
-            {"id": e["id"], "title": e["title"],
-             "date": e["start_time"].isoformat() if e["start_time"] else None,
-             "type": e["category"]}
-            for e in events
-        ]
+        events_context = []
+        for e in events:
+            try:
+                events_context.append({
+                    "id": e["id"], 
+                    "title": e["title"],
+                    "start_time": e["start_time"].isoformat() if e["start_time"] else None,
+                    "type": e["category"]
+                })
+            except KeyError as ke:
+                logger.warning(f"Event record missing key {ke}, keys available: {list(e.keys()) if hasattr(e, 'keys') else 'N/A'}")
+                continue
 
         matches = await self.ai_processor.find_related_events(
             document_title=doc["title"],

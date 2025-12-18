@@ -7,6 +7,8 @@ This package provides AI-powered processing capabilities:
 - DocumentLinker: Intelligent document-to-event matching
 - DocumentSummarizer: AI summaries for documents (generated once, reused)
 - EventSummarizer: AI-generated event summaries
+- SummaryGenerator: Cascading AI summaries (event → daily → weekly → etc.)
+- SummaryCascadeManager: Manages cascade updates when documents change
 - AIEventProcessor: Main facade for all AI operations (in parent module)
 """
 
@@ -15,6 +17,8 @@ from .pdf_extractor import extract_pdf_text, extract_pdf_text_sync
 from .linker import DocumentLinker
 from .doc_summarizer import DocumentSummarizer
 from .summarizer import EventSummarizer
+from .summary import SummaryGenerator, SummaryType, get_period_bounds
+from .cascade import SummaryCascadeManager
 
 __all__ = [
     "GeminiClient",
@@ -24,4 +28,8 @@ __all__ = [
     "DocumentLinker",
     "DocumentSummarizer",
     "EventSummarizer",
+    "SummaryGenerator",
+    "SummaryType",
+    "get_period_bounds",
+    "SummaryCascadeManager",
 ]

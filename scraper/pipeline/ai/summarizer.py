@@ -13,10 +13,11 @@ readable overview that helps residents:
 
 import logging
 import re
+from datetime import datetime
 from typing import Optional
 from collections import defaultdict
 
-from .client import GeminiClient
+from .client import GeminiClient, MODELS
 from .pdf_extractor import extract_pdf_text
 
 logger = logging.getLogger("civic.ai.summarizer")
@@ -162,10 +163,18 @@ class EventSummarizer:
         # Build the prompt (now includes amendments note and documents for source attribution)
         prompt = self._build_prompt(event, source_info, doc_content, amendments_note, documents)
         
-        response = await self._client.generate(prompt, system_prompt)
+        model = "flash"  # EventSummarizer uses flash model
+        response = await self._client.generate(prompt, system_prompt, model=model)
         
         if response:
             summary = self._clean_response(response)
+            
+            # Add generation footer
+            today = datetime.now().strftime("%B %d, %Y")
+            model_name = MODELS.get(model, "").split("/models/")[1].split(":")[0] if "/models/" in MODELS.get(model, "") else model
+            footer = f"\n\n---\n*Generated: {today} by {model_name}*"
+            summary = summary + footer
+            
             logger.info(
                 f"Generated AI summary for event '{event.get('title')}' "
                 f"({len(summary)} chars)"
