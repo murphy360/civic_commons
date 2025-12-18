@@ -4,7 +4,7 @@ The public-facing Next.js application for community residents.
 
 ## Overview
 
-This is the main web application that residents use to access community information, search documents, and interact with the AI assistant.
+This is the main web application that residents use to browse community events, search documents, watch meeting videos, and interact with AI-powered features.
 
 ## Tech Stack
 
@@ -12,9 +12,7 @@ This is the main web application that residents use to access community informat
 - **React 18** - UI library
 - **TypeScript** - Type safety
 - **Tailwind CSS** - Utility-first styling
-- **shadcn/ui** - Component library (copy-paste)
-- **Radix UI** - Headless primitives
-- **NextAuth.js v5** - Authentication (optional login)
+- **shadcn/ui** - Component library
 - **Drizzle ORM** - Database queries
 
 ## Directory Structure
@@ -22,27 +20,40 @@ This is the main web application that residents use to access community informat
 ```
 /web
 ├── app/
-│   ├── layout.tsx           # Root layout
+│   ├── layout.tsx           # Root layout with Header
 │   ├── page.tsx             # Home page
 │   ├── globals.css          # Global styles + Tailwind
-│   ├── (public)/            # Public routes
-│   │   ├── events/          # Events calendar
-│   │   ├── documents/       # Document browser
-│   │   └── search/          # Search results
+│   ├── events/              # Events calendar & details
+│   ├── documents/           # Document browser & viewer
+│   │   └── [id]/            # Document detail page
+│   ├── videos/              # Meeting video browser
+│   ├── legislation/         # Legislation tracking
+│   ├── newsletters/         # Generated newsletters
+│   ├── discuss/             # AI chat interface
+│   ├── actions/             # Server actions
+│   │   └── documents.ts     # Reprocess, prioritize actions
+│   ├── components/          # Shared components
+│   │   ├── Header.tsx       # Navigation header
+│   │   ├── AISummaryBadge.tsx   # AI summary status
+│   │   └── LinkStatusBadge.tsx  # Document link status
 │   └── api/                 # API routes
 │       └── chat/            # AI chat endpoint
-├── components/
-│   ├── ui/                  # shadcn/ui components
-│   └── features/            # Feature components
 ├── lib/
 │   ├── db.ts               # Database client
 │   └── utils.ts            # Utility functions
 ├── public/                  # Static assets
-├── next.config.js
-├── tailwind.config.ts
-├── tsconfig.json
-└── package.json
+└── next.config.js
 ```
+
+## Key Features
+
+- **Events Calendar** - Browse upcoming and past civic events
+- **Document Search** - Full-text search across agendas, minutes, packets
+- **AI Summaries** - View AI-generated summaries of documents
+- **Meeting Videos** - Watch YouTube recordings of meetings
+- **Legislation Tracking** - Track ordinances and resolutions
+- **Newsletters** - Read auto-generated community digests
+- **AI Chat** - Ask questions about civic data
 
 ## Development
 
@@ -50,31 +61,23 @@ This is the main web application that residents use to access community informat
 # Install dependencies
 npm install
 
-# Run development server
+# Run development server (port 3002)
 npm run dev
 
 # Build for production
 npm run build
-
-# Start production server
-npm start
 ```
 
 ## Environment Variables
 
-See `.env.example` in the project root for required variables.
-
-## Features (v1)
-
-- [ ] Home page with upcoming events
-- [ ] Events calendar with filtering
-- [ ] Document search and viewer
-- [ ] AI chat assistant widget
-- [ ] Source attribution
-- [ ] Mobile-responsive design
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `GEMINI_API_KEY` | For AI chat features |
 
 ## Docker
 
 ```bash
 docker-compose up commons-web
+# Access at http://localhost:3002
 ```

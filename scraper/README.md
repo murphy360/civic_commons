@@ -1,32 +1,53 @@
 # /scraper
 
-The background worker service that fetches data from configured sources.
+The background worker service that fetches data from configured sources and processes it with AI.
 
 ## Architecture
 
 ```
 /scraper
-├── main.py              # Scheduler entrypoint
+├── main.py              # Worker entrypoint with APScheduler
 ├── config.py            # Configuration loading (Pydantic)
 ├── models/              # Data models
-│   ├── __init__.py
-│   ├── event.py
-│   └── document.py
+│   ├── event.py         # Event model
+│   └── document.py      # Document model
 ├── drivers/             # Source-specific scrapers
-│   ├── __init__.py
 │   ├── base.py          # Abstract base class
-│   ├── civic_plus.py
-│   ├── aspnet_generic.py
-│   ├── rss.py
-│   └── libcal.py
+│   ├── civic_plus.py    # CivicPlus Agenda Center
+│   ├── civic_plus_rss.py    # CivicPlus RSS feeds
+│   ├── civic_plus_calendar.py # CivicPlus calendar
+│   ├── civicplus_document_center.py # Document Center
+│   ├── libcal.py        # Library calendar (LibCal)
+│   ├── rss.py           # Generic RSS
+│   ├── icalendar_driver.py  # iCalendar feeds
+│   ├── youtube_channel.py   # YouTube channel scraper
+│   ├── tcsd_agendas.py  # TCSD school board
+│   └── aspnet_generic.py    # ASP.NET sites
 ├── pipeline/            # Processing pipeline
-│   ├── __init__.py
-│   ├── pdf.py           # PDF extraction
-│   └── storage.py       # Database operations
-└── utils/               # Shared utilities
-    ├── __init__.py
-    └── http.py          # HTTP client with rate limiting
+│   ├── storage.py       # Database operations
+│   ├── scraper.py       # Scrape execution
+│   ├── document_linker.py   # Event-document linking
+│   ├── ai_queue.py      # AI processing orchestration
+│   ├── ai_processor.py  # AI task processing
+│   ├── downloader.py    # PDF/file downloading
+│   ├── backfill.py      # Historical data backfill
+│   ├── pdf.py           # PDF text extraction
+│   └── ai/              # AI-powered features
+│       ├── client.py        # Gemini API client
+│       ├── summarizer.py    # Event summarization
+│       ├── doc_summarizer.py    # Document summarization
+│       └── newsletter.py    # Newsletter generation
+└── scripts/             # Utility scripts
 ```
+
+## Key Features
+
+- **Scheduled Scraping** - APScheduler runs scrapes at configured intervals
+- **AI Summaries** - Gemini-powered document and event summarization
+- **Legislation Extraction** - Identifies ordinances/resolutions in documents
+- **Document Linking** - Links documents to events by date and AI matching
+- **Newsletter Generation** - Auto-generates daily/weekly/monthly digests
+- **Manual Triggers** - Admin can trigger scrapes via database flags
 
 ## Adding a New Driver
 
@@ -35,10 +56,10 @@ The background worker service that fetches data from configured sources.
 3. Register in `drivers/__init__.py`
 4. Use in YAML config: `driver: "your_driver"`
 
-## Running Locally
+## Running
 
 ```bash
-# With Docker
+# With Docker (recommended)
 docker-compose up commons-worker
 
 # Without Docker (development)
@@ -51,4 +72,23 @@ python main.py
 
 ## Environment Variables
 
-See `.env.example` in project root.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `GEMINI_API_KEY` | - | Google Gemini API key |
+| `SCRAPER_INTERVAL` | 3600 | Seconds between scrape cycles |
+| `AI_QUEUE_INTERVAL_SECONDS` | 30 | Seconds between AI queue checks |
+| `AI_QUEUE_BATCH_SIZE` | 1 | Documents to process per AI cycle |
+| `RUN_ON_STARTUP` | false | Run initial scrape on start |
+| `LOG_LEVEL` | INFO | Logging level |
+
+## Docker
+
+```bash
+# Build and run
+docker-compose build commons-worker
+docker-compose up -d commons-worker
+
+# View logs
+docker-compose logs -f commons-worker
+```

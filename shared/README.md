@@ -1,6 +1,6 @@
 # /shared
 
-Shared code used across multiple services.
+Shared TypeScript code used across web and admin applications.
 
 ## Overview
 
@@ -12,44 +12,40 @@ This directory contains shared TypeScript code that is used by both the `/web` a
 /shared
 ├── db/
 │   ├── index.ts             # Drizzle client export
-│   ├── schema.ts            # All table schemas
-│   └── migrations/          # Generated migrations
+│   └── schema.ts            # All table schemas
 ├── types/
 │   ├── index.ts             # Re-exports
 │   ├── event.ts             # Event types
 │   ├── document.ts          # Document types
 │   └── source.ts            # Source types
-└── ui/                      # Shared UI components (future)
+└── package.json
 ```
 
 ## Database Schema
 
-Uses Drizzle ORM with PostgreSQL. Tables:
+Uses Drizzle ORM with PostgreSQL. Key tables:
 
-- `cities` - City configurations
-- `sources` - Data source definitions
-- `events` - Calendar events
-- `documents` - Indexed documents
-- `users` - Admin users (NextAuth)
-- `accounts` - OAuth accounts (NextAuth)
-- `sessions` - User sessions (NextAuth)
+| Table | Description |
+|-------|-------------|
+| `sources` | Data source definitions |
+| `events` | Calendar events |
+| `documents` | Indexed documents (agendas, minutes, etc.) |
+| `event_sources` | Event-source relationships |
+| `event_documents` | Event-document relationships |
+| `legislation_mentions` | Tracked legislation items |
+| `newsletters` | Generated newsletters |
 
 ## Usage
 
 ```typescript
 // In web or admin
 import { db } from '@/shared/db';
-import { events, documents } from '@/shared/db/schema';
+import { events, documents, sources } from '@/shared/db/schema';
 import type { Event, Document } from '@/shared/types';
 ```
 
-## Migrations
+## Adding Schema Changes
 
-```bash
-# Generate migration after schema changes
-cd shared
-npx drizzle-kit generate:pg
-
-# Push schema to database (development)
-npx drizzle-kit push:pg
-```
+1. Edit `db/schema.ts`
+2. Add migration in `scripts/migrations/`
+3. Apply migration: `docker-compose exec db psql -U commons -d civic_commons -f /scripts/migrations/NNN_name.sql`
