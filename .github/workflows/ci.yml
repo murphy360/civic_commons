@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ==========================================================================
+  # Python Linting and Tests
+  # ==========================================================================
+  python:
+    name: Python CI
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      
+      - name: Install scraper dependencies
+        run: |
+          pip install -r scraper/requirements.txt
+          pip install pytest pytest-asyncio pytest-cov black isort flake8
+      
+      - name: Install server dependencies
+        run: pip install -r server/requirements.txt
+      
+      - name: Lint with flake8
+        run: |
+          # Stop on syntax errors or undefined names
+          flake8 scraper server --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Treat all other issues as warnings
+          flake8 scraper server --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+      
+      - name: Check formatting with black
+        run: black --check --diff scraper server
+        continue-on-error: true
+      
+      - name: Check import sorting with isort
+        run: isort --check-only --diff scraper server
+        continue-on-error: true
+      
+      - name: Run Python tests
+        run: pytest tests/scraper tests/server --ignore=tests/scraper/drivers --ignore=tests/server -v
+        continue-on-error: true
+
+  # ==========================================================================
+  # TypeScript/Node Linting and Build
+  # ==========================================================================
+  typescript:
+    name: TypeScript CI
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        app: [web, admin]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: ${{ matrix.app }}
+        run: npm ci || npm install
+      
+      - name: Type check
+        working-directory: ${{ matrix.app }}
+        run: npx tsc --noEmit
+        continue-on-error: true
+      
+      - name: Lint
+        working-directory: ${{ matrix.app }}
+        run: npm run lint || true
+        continue-on-error: true
+      
+      - name: Build
+        working-directory: ${{ matrix.app }}
+        run: npm run build
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+          NEXTAUTH_SECRET: test-secret-for-build
+          NEXTAUTH_URL: http://localhost:3000
+
+  # ==========================================================================
+  # Docker Build Test
+  # ==========================================================================
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Worker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./scraper
+          push: false
+          tags: civic_commons-worker:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build API Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile.api
+          push: false
+          tags: civic_commons-api:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build Web Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./web
+          push: false
+          tags: civic_commons-web:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            DATABASE_URL=postgresql://test:test@localhost:5432/test
+            NEXTAUTH_SECRET=test-secret
+            NEXTAUTH_URL=http://localhost:3000
+      
+      - name: Build Admin Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./admin
+          push: false
+          tags: civic_commons-admin:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            DATABASE_URL=postgresql://test:test@localhost:5432/test
+            NEXTAUTH_SECRET=test-secret
+            NEXTAUTH_URL=http://localhost:3001

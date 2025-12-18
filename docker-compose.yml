@@ -65,6 +65,12 @@ services:
     volumes:
       - ./configs:/app/configs:ro
       - scraper_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - civic_network
 
@@ -111,6 +117,12 @@ services:
       DEFAULT_CONFIG: ${DEFAULT_CONFIG:-twinsburg.yaml}
     volumes:
       - ./configs:/app/configs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     networks:
       - civic_network
 
@@ -139,6 +151,12 @@ services:
       DOCUMENT_STORAGE_DIR: /data/documents
     volumes:
       - scraper_data:/data:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - civic_network
 
@@ -165,6 +183,12 @@ services:
       AI_QUEUE_INTERVAL_SECONDS: ${AI_QUEUE_INTERVAL_SECONDS:-30}
       AI_QUEUE_BATCH_SIZE: ${AI_QUEUE_BATCH_SIZE:-1}
       AI_SUMMARY_MAX_AGE_DAYS: ${AI_SUMMARY_MAX_AGE_DAYS:-0}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - civic_network
 

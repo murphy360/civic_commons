@@ -121,7 +121,7 @@ docker compose down
 docker compose down -v
 ```
 
-## Development Mode (Optional)
+## Development Mode (Optional) {#development-mode-optional}
 
 For active development with hot reload, you can run services locally:
 

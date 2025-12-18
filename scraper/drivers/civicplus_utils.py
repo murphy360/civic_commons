@@ -204,6 +204,30 @@ def is_document_url(href: str) -> bool:
 
 
 # =============================================================================
+# HTML Cleaning
+# =============================================================================
+
+def strip_html(text: str) -> str:
+    """
+    Remove HTML tags from a string.
+    
+    Simple regex-based approach for cleaning RSS feed content.
+    """
+    if not text:
+        return ""
+    # Remove HTML tags
+    clean = re.sub(r'<[^>]+>', '', text)
+    # Decode common HTML entities
+    clean = clean.replace('&nbsp;', ' ')
+    clean = clean.replace('&amp;', '&')
+    clean = clean.replace('&lt;', '<')
+    clean = clean.replace('&gt;', '>')
+    clean = clean.replace('&quot;', '"')
+    clean = clean.replace('&#39;', "'")
+    return clean.strip()
+
+
+# =============================================================================
 # Title Cleaning
 # =============================================================================
 
