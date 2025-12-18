@@ -503,14 +503,21 @@ class Worker:
     async def _process_document_summaries(self, conn, batch_size: int) -> None:
         """Generate AI summaries for documents that don't have them.
         
-        Prioritizes documents that need summaries for linking (linking_status='needs_summary').
-        Respects ai_summary_max_age_days setting to skip old documents based on meeting_date.
+        Prioritizes documents by meeting_date descending (newest first):
+        - Future meetings processed first (upcoming events)
+        - Then most recent past meetings
+        - Works backwards in time from there
+        
+        This ensures upcoming meetings are always prioritized, and new documents
+        are processed based on their date regardless of when they were added.
+        
+        Respects ai_summary_max_age_days setting to skip old documents.
         """
-        # Build age filter if configured - only summarize recent documents
+        # Build age filter if configured - only summarize documents within range
         max_age_days = self.settings.ai_summary_max_age_days
         age_filter = ""
         if max_age_days > 0:
-            # Only process documents with meeting_date within the age limit
+            # Process documents within age limit (past or future)
             # Documents without meeting_date are processed (they're likely recent)
             age_filter = f"""AND (
                 meeting_date >= NOW() - INTERVAL '{max_age_days} days'
@@ -518,19 +525,24 @@ class Worker:
             )"""
         
         docs = await conn.fetch(f"""
-            SELECT id, title, document_type, content_markdown, local_path, source_url, linking_status
+            SELECT id, title, document_type, content_markdown, local_path, source_url, linking_status, meeting_date
             FROM documents
             WHERE (ai_summary IS NULL OR ai_summary = '')
               AND local_path IS NOT NULL
               {age_filter}
             ORDER BY 
-                -- Prioritize docs that need summary for linking
+                -- Primary: Newest dates first (highest epoch timestamp)
+                -- Documents with NULL meeting_date sorted to end
+                meeting_date DESC NULLS LAST,
+                -- Secondary: Prioritize docs that need summary for linking
                 CASE WHEN linking_status = 'needs_summary' THEN 0 ELSE 1 END,
+                -- Tertiary: Local files over remote content
                 CASE 
                     WHEN local_path IS NOT NULL THEN 0 
                     WHEN document_type = 'video' AND source_url LIKE '%youtu%' THEN 1
                     ELSE 2 
                 END,
+                -- Finally: newest created first for docs without dates
                 created_at DESC
             LIMIT $1
         """, batch_size)
@@ -1046,7 +1058,7 @@ class Worker:
                 matches = await self.ai_processor.find_related_events(
                     document_title=doc["title"],
                     document_type=doc["document_type"],
-                    document_summary=doc["ai_summary"],
+                    document_content=doc["ai_summary"],  # Use summary as content for AI linking
                     events=events_context,
                 )
                 
@@ -1298,7 +1310,7 @@ class Worker:
                 matches = await self.ai_processor.find_related_events(
                     document_title=doc["title"],
                     document_type=doc["document_type"],
-                    document_summary=doc["ai_summary"],
+                    document_content=doc["ai_summary"],  # Use summary as content for AI linking
                     events=events_context,
                 )
                 
@@ -1463,6 +1475,7 @@ class Worker:
     async def _process_event_summaries(self, conn, batch_size: int) -> None:
         """Generate AI summaries for events that have linked documents.
         
+        Prioritizes by start_time descending (newest/future events first).
         Respects ai_summary_max_age_days setting to skip old events.
         """
         # Build age filter if configured
@@ -1472,6 +1485,7 @@ class Worker:
             age_filter = f"AND e.start_time >= NOW() - INTERVAL '{max_age_days} days'"
         
         # Find events that need summaries and have properly linked documents
+        # Ordered by start_time DESC (newest/future events first)
         events = await conn.fetch(f"""
             SELECT DISTINCT e.id, e.title, e.start_time, e.category
             FROM events e
@@ -1482,7 +1496,7 @@ class Worker:
               AND d.ai_summary != ''
               AND ed.relationship NOT IN ('none', 'unlinked')
               {age_filter}
-            ORDER BY e.start_time DESC
+            ORDER BY e.start_time DESC NULLS LAST
             LIMIT $1
         """, batch_size)
         

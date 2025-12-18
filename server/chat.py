@@ -69,7 +69,7 @@ Remember: Your job is to help people discover civic information easily. Don't ma
 TOOL_DEFINITIONS = {
     "get_events": {
         "name": "get_events",
-        "description": "Search for upcoming or past events and meetings. Use this to find city council meetings, school board meetings, commission meetings, and community events.",
+        "description": "Search for upcoming or past events and meetings. Use this to find city council meetings, school board meetings, commission meetings, library events, and community events.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -81,9 +81,9 @@ TOOL_DEFINITIONS = {
                     "type": "string",
                     "description": "End date for search in YYYY-MM-DD format. Defaults to 30 days from start."
                 },
-                "source_type": {
+                "source_name": {
                     "type": "string",
-                    "description": "Filter by source type: city_council, school_board, commission, library, etc."
+                    "description": "Filter by source name (partial match). Examples: 'Library', 'City Council', 'School', 'Parks', 'Rotary'. Leave empty to search all sources."
                 },
                 "limit": {
                     "type": "integer",
@@ -239,7 +239,7 @@ class ChatService:
         
         start_str = args.get("start_date")
         end_str = args.get("end_date")
-        source_type = args.get("source_type")
+        source_name = args.get("source_name")  # Changed from source_type
         limit = args.get("limit", 20)
         
         start = date.fromisoformat(start_str) if start_str else today
@@ -249,7 +249,7 @@ class ChatService:
             city_id=self.city_id,
             start_date=start,
             end_date=end,
-            source_type=source_type,
+            source_name=source_name,  # Changed from source_type
             limit=limit,
         )
         

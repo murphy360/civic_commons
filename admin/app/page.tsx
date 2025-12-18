@@ -35,6 +35,15 @@ interface ContentTypeStats {
   aged_out: number;
 }
 
+interface RecentAIProcessed {
+  id: number;
+  type: 'document' | 'event';
+  title: string;
+  doc_type: string | null;
+  meeting_date: Date | null;
+  updated_at: Date;
+}
+
 async function getStats() {
   try {
     // Calculate cutoff date for aged-out items
@@ -250,9 +259,61 @@ async function getSources(): Promise<SourceStatus[]> {
   }
 }
 
+async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
+  try {
+    // Get last 5 AI-processed items by meeting date (newest content first)
+    // This prioritizes recent/upcoming meetings over old restored data
+    const items = await sql<Array<{
+      id: number;
+      type: 'document' | 'event';
+      title: string;
+      doc_type: string | null;
+      meeting_date: Date | null;
+      updated_at: Date;
+    }>>`
+      (
+        SELECT 
+          id,
+          'document'::text as type,
+          title,
+          document_type as doc_type,
+          meeting_date,
+          updated_at
+        FROM documents
+        WHERE ai_summary IS NOT NULL AND ai_summary != ''
+          AND meeting_date IS NOT NULL
+        ORDER BY meeting_date DESC
+        LIMIT 5
+      )
+      UNION ALL
+      (
+        SELECT 
+          id,
+          'event'::text as type,
+          title,
+          NULL as doc_type,
+          start_time as meeting_date,
+          updated_at
+        FROM events
+        WHERE ai_summary IS NOT NULL
+          AND start_time IS NOT NULL
+        ORDER BY start_time DESC
+        LIMIT 5
+      )
+      ORDER BY meeting_date DESC NULLS LAST
+      LIMIT 5
+    `;
+    return items;
+  } catch (error) {
+    console.error('Failed to fetch recent AI processed:', error);
+    return [];
+  }
+}
+
 export default async function AdminDashboard() {
   const stats = await getStats();
   const sources = await getSources();
+  const recentAIProcessed = await getRecentAIProcessed();
 
   // Calculate totals for content breakdown
   const allTypes = ['agenda', 'minutes', 'video', 'ordinance', 'resolution', 'other'] as const;
@@ -538,6 +599,43 @@ export default async function AdminDashboard() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Recent AI Processed */}
+          <div className="rounded-lg border bg-card p-6">
+            <h2 className="font-semibold mb-4">🤖 Recently AI Processed</h2>
+            {recentAIProcessed.length > 0 ? (
+              <div className="space-y-2">
+                {recentAIProcessed.map((item) => (
+                  <div key={`${item.type}-${item.id}`} className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50">
+                    <span className="text-lg">
+                      {item.type === 'event' ? '📅' : 
+                        item.doc_type === 'video' ? '🎬' :
+                        item.doc_type === 'agenda' ? '📋' :
+                        item.doc_type === 'minutes' ? '📝' :
+                        item.doc_type === 'ordinance' || item.doc_type === 'resolution' ? '📜' : '📄'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{item.title}</p>
+                      <div className="flex gap-2 text-xs text-muted-foreground">
+                        <span className="capitalize">{item.type === 'event' ? 'Event' : item.doc_type || 'Document'}</span>
+                        {item.meeting_date && (
+                          <>
+                            <span>•</span>
+                            <span>{new Date(item.meeting_date).toLocaleDateString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(item.updated_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No items processed yet</p>
+            )}
           </div>
 
           {/* Backfill & Newsletter Row */}

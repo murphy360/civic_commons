@@ -4,7 +4,7 @@ Civic Commons MCP Server - Database Layer
 Provides async database queries for MCP tools.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -40,7 +40,7 @@ class Database:
         city_id: str,
         start_date: date,
         end_date: date,
-        source_type: str | None = None,
+        source_name: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """
@@ -50,7 +50,7 @@ class Database:
             city_id: The city identifier (e.g., "twinsburg")
             start_date: Start of date range (inclusive)
             end_date: End of date range (inclusive)
-            source_type: Optional filter by source type
+            source_name: Optional filter by source name (partial match, case-insensitive)
             limit: Maximum number of events to return
             
         Returns:
@@ -71,13 +71,15 @@ class Database:
             LEFT JOIN event_sources es ON e.id = es.event_id
             LEFT JOIN sources s ON es.source_id = s.id
             WHERE e.start_time >= $1
-              AND e.start_time <= $2
+              AND e.start_time < $2
         """
-        params: list[Any] = [start_date, end_date]
+        # Use < next day instead of <= to include all events on end_date
+        end_date_exclusive = end_date + timedelta(days=1)
+        params: list[Any] = [start_date, end_date_exclusive]
         
-        if source_type:
-            params.append(source_type)
-            query += f" AND s.source_type = ${len(params)}"
+        if source_name:
+            params.append(f"%{source_name}%")
+            query += f" AND s.name ILIKE ${len(params)}"
         
         query += " ORDER BY e.start_time ASC"
         params.append(limit)
