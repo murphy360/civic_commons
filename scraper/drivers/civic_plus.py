@@ -589,7 +589,7 @@ class CivicPlusDriver(BaseDriver):
             return DocumentType.VIDEO
         
         # Check URL patterns (more reliable for CivicPlus)
-        if "viewfile/minutes" in href_lower:
+        if "viewfile/minutes" in href_lower or "viewfile/archivedminutes" in href_lower:
             return DocumentType.MINUTES
         elif "viewfile/archivedagenda" in href_lower:
             return DocumentType.AGENDA  # Archived agendas are still agendas

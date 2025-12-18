@@ -415,3 +415,114 @@ Return valid JSON only. No explanations, no markdown formatting."""
         
         return summary.strip()
 
+    async def validate_metadata(
+        self,
+        title: str,
+        current_document_type: Optional[str],
+        content_text: Optional[str] = None,
+        local_path: Optional[str] = None,
+        max_content_chars: int = 3000,
+    ) -> Optional[dict]:
+        """
+        Validate and potentially correct document metadata using AI.
+        
+        Args:
+            title: Document title
+            current_document_type: Current document type from scraper
+            content_text: Pre-extracted text content
+            local_path: Path to local file for PDF extraction if no content
+            max_content_chars: Maximum characters to send to AI
+            
+        Returns:
+            Dict with validated metadata or None on failure:
+            {
+                "document_type": "agenda|minutes|video|ordinance|resolution|packet|other",
+                "document_type_confidence": "high|medium|low",
+                "document_type_reason": "Brief explanation if changed"
+            }
+        """
+        if not self.enabled:
+            return None
+        
+        # Get content
+        content = content_text
+        if not content and local_path:
+            content = await extract_pdf_text(local_path, max_pages=3)
+        
+        if not content:
+            return None
+        
+        content = content[:max_content_chars]
+        
+        prompt = f"""Analyze this government document and validate its metadata.
+
+Document Title: {title}
+Current Type: {current_document_type or 'unknown'}
+
+DOCUMENT CONTENT (first part):
+{content}
+
+---
+Based on the ACTUAL CONTENT (not just the title), determine the correct document type.
+
+Valid types:
+- "agenda" = Future meeting agenda listing items to be discussed
+- "minutes" = Official record of what happened at a past meeting (votes, motions, attendance)
+- "packet" = Combined agenda + supporting documents
+- "ordinance" = Local law or regulation
+- "resolution" = Formal decision/statement (not a law)
+- "video" = Video recording
+- "other" = Doesn't fit above categories
+
+Respond with ONLY valid JSON (no markdown):
+{{"document_type": "<type>", "confidence": "high|medium|low", "reason": "brief explanation if type differs from current"}}"""
+
+        system_prompt = "You are a document classifier for government records. Respond with valid JSON only."
+        
+        response = await self._client.generate(prompt, system_prompt)
+        
+        if not response:
+            return None
+        
+        try:
+            # Clean up response
+            response_text = response.strip()
+            if response_text.startswith("```"):
+                parts = response_text.split("```")
+                if len(parts) >= 2:
+                    response_text = parts[1]
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:].lstrip()
+            
+            result = json.loads(response_text)
+            
+            # Validate the response structure
+            if "document_type" not in result:
+                return None
+            
+            # Normalize document type
+            valid_types = {"agenda", "minutes", "video", "ordinance", "resolution", "packet", "other"}
+            doc_type = result.get("document_type", "").lower()
+            if doc_type not in valid_types:
+                doc_type = "other"
+            
+            validated = {
+                "document_type": doc_type,
+                "confidence": result.get("confidence", "medium"),
+                "reason": result.get("reason", "")
+            }
+            
+            # Log if type changed
+            if current_document_type and doc_type != current_document_type:
+                logger.info(
+                    f"Metadata validation suggests type change for '{title}': "
+                    f"{current_document_type} -> {doc_type} ({validated['confidence']} confidence: {validated['reason']})"
+                )
+            
+            return validated
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse metadata validation JSON: {e}")
+            return None
+
+

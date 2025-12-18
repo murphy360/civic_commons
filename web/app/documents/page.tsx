@@ -1,5 +1,8 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
+import { Header } from '../components/Header';
+import { LinkStatusBadge } from '../components/LinkStatusBadge';
+import { AISummaryBadge } from '../components/AISummaryBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -186,54 +189,7 @@ export default async function DocumentsPage({
 
   return (
     <div className="flex flex-col min-h-screen">
-      {/* Header */}
-      <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container flex h-14 items-center">
-          <div className="mr-4 flex">
-            <Link href="/" className="mr-6 flex items-center space-x-2">
-              <span className="font-bold text-xl">Civic Commons</span>
-            </Link>
-          </div>
-          <nav className="flex items-center space-x-6 text-sm font-medium">
-            <Link
-              href="/events"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Events
-            </Link>
-            <Link
-              href="/documents"
-              className="transition-colors hover:text-foreground/80 text-foreground"
-            >
-              Documents
-            </Link>
-            <Link
-              href="/videos"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Videos
-            </Link>
-            <Link
-              href="/legislation"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Legislation
-            </Link>
-            <Link
-              href="/newsletters"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Newsletters
-            </Link>
-            <Link
-              href="/discuss"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Discuss
-            </Link>
-          </nav>
-        </div>
-      </header>
+      <Header />
 
       {/* Main Content */}
       <main className="container py-8">
@@ -326,29 +282,12 @@ export default async function DocumentsPage({
                       <span className={`text-xs font-medium px-2 py-1 rounded-full ${getDocumentTypeBadgeColor(doc.document_type)}`}>
                         {getDocumentTypeLabel(doc.document_type)}
                       </span>
-                      {doc.event_count > 0 ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-green-100 text-green-700">
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                          </svg>
-                          {doc.event_count} event{doc.event_count !== 1 ? 's' : ''}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-700">
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                          </svg>
-                          Unlinked
-                        </span>
-                      )}
-                      {doc.ai_summary && (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">
-                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                          </svg>
-                          ✨ AI Summary
-                        </span>
-                      )}
+                      <LinkStatusBadge documentId={doc.id} eventCount={doc.event_count} />
+                      <AISummaryBadge 
+                        documentId={doc.id} 
+                        hasSummary={!!doc.ai_summary}
+                        canSummarize={!!doc.local_path || (doc.document_type === 'video' && !!doc.source_url?.includes('youtu'))}
+                      />
                     </div>
                     <h2 className="text-xl font-semibold mb-2">{doc.title}</h2>
                     {doc.content_text && (

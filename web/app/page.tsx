@@ -1,50 +1,10 @@
 import Link from 'next/link';
+import { Header } from './components/Header';
 
 export default function HomePage() {
   return (
     <div className="flex flex-col min-h-screen">
-      {/* Header */}
-      <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container flex h-14 items-center">
-          <div className="mr-4 flex">
-            <Link href="/" className="mr-6 flex items-center space-x-2">
-              <span className="font-bold text-xl">Civic Commons</span>
-            </Link>
-          </div>
-          <nav className="flex items-center space-x-6 text-sm font-medium">
-            <Link
-              href="/events"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Events
-            </Link>
-            <Link
-              href="/documents"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Documents
-            </Link>
-            <Link
-              href="/legislation"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Legislation
-            </Link>
-            <Link
-              href="/newsletters"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Newsletters
-            </Link>
-            <Link
-              href="/discuss"
-              className="transition-colors hover:text-foreground/80 text-foreground/60"
-            >
-              Discuss
-            </Link>
-          </nav>
-        </div>
-      </header>
+      <Header />
 
       {/* Hero Section */}
       <section className="container flex flex-col items-center justify-center gap-4 py-24 md:py-32">

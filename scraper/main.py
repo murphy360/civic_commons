@@ -531,12 +531,14 @@ class Worker:
               AND (local_path IS NOT NULL OR (document_type = 'video' AND source_url LIKE '%youtu%'))
               {age_filter}
             ORDER BY 
-                -- Primary: Newest dates first (highest epoch timestamp)
+                -- Primary: User-prioritized items first (most recent priority wins)
+                summary_priority DESC NULLS LAST,
+                -- Secondary: Newest meeting dates first
                 -- Documents with NULL meeting_date sorted to end
                 meeting_date DESC NULLS LAST,
-                -- Secondary: Prioritize docs that need summary for linking
+                -- Tertiary: Prioritize docs that need summary for linking
                 CASE WHEN linking_status = 'needs_summary' THEN 0 ELSE 1 END,
-                -- Tertiary: Local files over remote content
+                -- Quaternary: Local files over remote content
                 CASE 
                     WHEN local_path IS NOT NULL THEN 0 
                     WHEN document_type = 'video' AND source_url LIKE '%youtu%' THEN 1
@@ -565,9 +567,30 @@ class Worker:
                     if "youtu.be" in url or "youtube.com" in url:
                         video_url = url
                 
+                # Validate metadata (for non-video documents with uncertain types)
+                validated_type = doc["document_type"]
+                if doc["document_type"] in ("other", None) and not video_url:
+                    metadata = await self.doc_summarizer.validate_metadata(
+                        title=doc["title"],
+                        current_document_type=doc["document_type"],
+                        content_text=doc["content_markdown"],
+                        local_path=doc["local_path"],
+                    )
+                    if metadata and metadata.get("confidence") in ("high", "medium"):
+                        new_type = metadata.get("document_type")
+                        if new_type and new_type != doc["document_type"]:
+                            validated_type = new_type
+                            await conn.execute("""
+                                UPDATE documents SET document_type = $1 WHERE id = $2
+                            """, validated_type, doc["id"])
+                            logger.info(
+                                f"Corrected document type for '{doc['title']}': "
+                                f"{doc['document_type']} -> {validated_type}"
+                            )
+                
                 summary = await self.doc_summarizer.generate_summary(
                     title=doc["title"],
-                    document_type=doc["document_type"],
+                    document_type=validated_type,
                     content_text=doc["content_markdown"],
                     local_path=doc["local_path"],
                     video_url=video_url,
@@ -583,12 +606,12 @@ class Worker:
                     
                     # Extract legislation mentions from this document
                     # (only for meeting documents, not videos)
-                    if doc["document_type"] != "video":
+                    if validated_type != "video":
                         await self._extract_and_link_legislation(
                             conn,
                             doc["id"],
                             doc["title"],
-                            doc["document_type"],
+                            validated_type,
                             doc["content_markdown"],
                             doc["local_path"]
                         )
