@@ -13,7 +13,7 @@ Civic Commons scrapes meeting minutes, agendas, events, and documents from city 
 - 📜 **Legislation Tracking** - Extracts and tracks ordinances, resolutions across meetings
 - 📰 **Newsletters** - Auto-generated daily/weekly/monthly digests
 - 🔗 **MCP Server** - LLM-accessible API for AI assistants
-- 🏙️ **Multi-City Support** - Configure multiple cities via YAML manifests
+- 🏙️ **Multi-City Support** - Configure cities via YAML (assistant persona, sources, CivicPlus mappings)
 - 🐳 **Docker-First** - One command to run everything
 
 ## 🚀 Quick Start
@@ -26,7 +26,7 @@ Copy-Item .env.example .env
 # Edit .env with your passwords and GEMINI_API_KEY
 
 # 2. Start everything
-docker-compose up -d
+docker compose up -d
 
 # 3. Access the apps
 # Web:   http://localhost:3002
@@ -40,9 +40,10 @@ docker-compose up -d
 ```
 civic_commons/
 ├── admin/          # Admin dashboard (Next.js) - source management
-├── configs/        # City YAML configurations
+├── configs/        # City YAML configurations (persona, sources, CivicPlus CIDs)
 ├── scraper/        # Python worker service
 │   ├── drivers/    # Source-specific scrapers (CivicPlus, LibCal, RSS, etc.)
+│   │   └── civicplus_utils.py  # Shared CivicPlus utilities
 │   ├── pipeline/   # Data processing (AI, storage, linking)
 │   │   └── ai/     # Gemini-powered summarization
 │   └── models/     # Pydantic data models
@@ -61,7 +62,7 @@ civic_commons/
 | **Admin** | `commons-admin` | Next.js 14 | Source management, monitoring |
 | **Worker** | `commons-worker` | Python/APScheduler | Scheduled scraping & AI processing |
 | **MCP Server** | `commons-mcp` | Python/FastMCP | LLM tool interface (stdio) |
-| **API Server** | `commons-api` | Python/FastAPI | REST API for web/admin |
+| **API Server** | `commons-api` | Python/FastAPI | REST API for web/admin, configurable chat persona |
 | **Database** | `db` | PostgreSQL 15 | Data storage with full-text search |
 
 ## 🔧 Environment Variables
@@ -71,6 +72,7 @@ Key variables in `.env`:
 ```bash
 POSTGRES_PASSWORD=your_password      # Required
 GEMINI_API_KEY=your_api_key          # For AI summaries
+DEFAULT_CONFIG=twinsburg.yaml        # City config file to use
 SCRAPER_INTERVAL=3600                # Seconds between scrapes
 AI_QUEUE_INTERVAL_SECONDS=30         # AI processing frequency
 ```
@@ -81,6 +83,7 @@ AI_QUEUE_INTERVAL_SECONDS=30         # AI processing frequency
 - [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) - Architecture deep dive
 - [configs/README.md](configs/README.md) - City configuration guide
 - [scraper/README.md](scraper/README.md) - Worker service details
+- [scraper/drivers/README.md](scraper/drivers/README.md) - Driver development guide
 - [server/README.md](server/README.md) - MCP/API server details
 
 ## 🤝 Contributing

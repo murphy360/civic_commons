@@ -78,6 +78,6 @@ npm run build
 ## Docker
 
 ```bash
-docker-compose up commons-web
+docker compose up commons-web
 # Access at http://localhost:3002
 ```

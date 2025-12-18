@@ -12,17 +12,18 @@ The background worker service that fetches data from configured sources and proc
 │   ├── event.py         # Event model
 │   └── document.py      # Document model
 ├── drivers/             # Source-specific scrapers
-│   ├── base.py          # Abstract base class
-│   ├── civic_plus.py    # CivicPlus Agenda Center
-│   ├── civic_plus_rss.py    # CivicPlus RSS feeds
-│   ├── civic_plus_calendar.py # CivicPlus calendar
+│   ├── base.py              # Abstract base class
+│   ├── civic_plus.py        # CivicPlus Agenda Center (HTML)
+│   ├── civic_plus_rss.py    # CivicPlus Agenda Center (RSS)
+│   ├── civic_plus_calendar.py # CivicPlus calendar module
 │   ├── civicplus_document_center.py # Document Center
-│   ├── libcal.py        # Library calendar (LibCal)
-│   ├── rss.py           # Generic RSS
+│   ├── civicplus_utils.py   # Shared CivicPlus utilities
+│   ├── libcal.py            # Library calendar (LibCal)
+│   ├── rss.py               # Generic RSS
 │   ├── icalendar_driver.py  # iCalendar feeds
 │   ├── youtube_channel.py   # YouTube channel scraper
-│   ├── tcsd_agendas.py  # TCSD school board
-│   └── aspnet_generic.py    # ASP.NET sites
+│   ├── tcsd_agendas.py      # TCSD school board
+│   └── aspnet_generic.py    # ASP.NET sites (Playwright)
 ├── pipeline/            # Processing pipeline
 │   ├── storage.py       # Database operations
 │   ├── scraper.py       # Scrape execution
@@ -49,6 +50,19 @@ The background worker service that fetches data from configured sources and proc
 - **Newsletter Generation** - Auto-generates daily/weekly/monthly digests
 - **Manual Triggers** - Admin can trigger scrapes via database flags
 
+## CivicPlus Drivers
+
+The CivicPlus family of drivers share common utilities in `civicplus_utils.py`:
+
+| Driver | Use Case | Lines |
+|--------|----------|-------|
+| `civic_plus.py` | HTML scraping of Agenda Center | ~500 |
+| `civic_plus_rss.py` | RSS feed parsing | ~580 |
+| `civic_plus_calendar.py` | Calendar module scraping | ~430 |
+| `civicplus_utils.py` | Shared date parsing, type inference | ~250 |
+
+**Note**: CivicPlus category CIDs are site-specific and configured in the city's YAML config under `civicplus.agenda_categories` and `civicplus.calendar_categories`.
+
 ## Adding a New Driver
 
 1. Copy `drivers/_template.py` to `drivers/your_driver.py`
@@ -60,7 +74,7 @@ The background worker service that fetches data from configured sources and proc
 
 ```bash
 # With Docker (recommended)
-docker-compose up commons-worker
+docker compose up commons-worker
 
 # Without Docker (development)
 cd scraper
@@ -76,6 +90,7 @@ python main.py
 |----------|---------|-------------|
 | `DATABASE_URL` | - | PostgreSQL connection string |
 | `GEMINI_API_KEY` | - | Google Gemini API key |
+| `DEFAULT_CONFIG` | twinsburg.yaml | City config file to load |
 | `SCRAPER_INTERVAL` | 3600 | Seconds between scrape cycles |
 | `AI_QUEUE_INTERVAL_SECONDS` | 30 | Seconds between AI queue checks |
 | `AI_QUEUE_BATCH_SIZE` | 1 | Documents to process per AI cycle |
@@ -86,9 +101,9 @@ python main.py
 
 ```bash
 # Build and run
-docker-compose build commons-worker
-docker-compose up -d commons-worker
+docker compose build commons-worker
+docker compose up -d commons-worker
 
 # View logs
-docker-compose logs -f commons-worker
+docker compose logs -f commons-worker
 ```

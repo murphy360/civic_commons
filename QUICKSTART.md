@@ -38,7 +38,7 @@ ADMIN_PORT=3003
 ## 2. Start Everything
 
 ```powershell
-docker-compose up -d
+docker compose up -d
 ```
 
 That's it! Docker will:
@@ -62,7 +62,7 @@ First run takes 2-3 minutes to build images. Subsequent starts are instant.
 
 ```powershell
 # Check all containers are running
-docker-compose ps
+docker compose ps
 
 # Test web health endpoint
 Invoke-RestMethod http://localhost:3002/api/health
@@ -71,7 +71,7 @@ Invoke-RestMethod http://localhost:3002/api/health
 Invoke-RestMethod http://localhost:3003/api/health
 
 # View scraper logs
-docker-compose logs -f commons-worker
+docker compose logs -f commons-worker
 ```
 
 You should see:
@@ -87,12 +87,12 @@ WEB_PORT=3004
 ADMIN_PORT=3005
 DB_PORT=5433
 ```
-Then restart: `docker-compose down && docker-compose up -d`
+Then restart: `docker compose down && docker compose up -d`
 
 ### Database connection failed
 ```powershell
 # Check database health
-docker-compose logs db
+docker compose logs db
 
 # Verify tables were created
 docker exec civic_commons_db psql -U commons -d civic_commons -c "\dt"
@@ -101,24 +101,24 @@ docker exec civic_commons_db psql -U commons -d civic_commons -c "\dt"
 ### Need to reset the database
 ```powershell
 # WARNING: This deletes all data
-docker-compose down -v
-docker-compose up -d
+docker compose down -v
+docker compose up -d
 ```
 
 ### Images need rebuilding after code changes
 ```powershell
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ## Stopping Services
 
 ```powershell
 # Stop all (keeps data)
-docker-compose down
+docker compose down
 
 # Stop and remove volumes (WARNING: deletes data)
-docker-compose down -v
+docker compose down -v
 ```
 
 ## Development Mode (Optional)
@@ -127,7 +127,7 @@ For active development with hot reload, you can run services locally:
 
 ```powershell
 # Terminal 1: Database only in Docker
-docker-compose up db
+docker compose up db
 
 # Terminal 2: Run web locally (requires Node.js 20+)
 cd web

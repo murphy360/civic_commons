@@ -57,13 +57,13 @@ cd admin && npm test
 
 ```bash
 # Start services
-docker-compose up -d
+docker compose up -d
 
 # Run integration tests
 pytest tests/integration/
 
 # Cleanup
-docker-compose down
+docker compose down
 ```
 
 ## Writing Tests

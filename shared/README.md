@@ -48,4 +48,7 @@ import type { Event, Document } from '@/shared/types';
 
 1. Edit `db/schema.ts`
 2. Add migration in `scripts/migrations/`
-3. Apply migration: `docker-compose exec db psql -U commons -d civic_commons -f /scripts/migrations/NNN_name.sql`
+3. Apply migration:
+```bash
+docker compose exec db psql -U commons -d civic_commons -f /scripts/migrations/NNN_name.sql
+```

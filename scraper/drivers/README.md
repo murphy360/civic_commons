@@ -16,14 +16,44 @@ class BaseDriver(ABC):
 
 ## Available Drivers
 
-| Driver | Source Type | Notes |
-|--------|-------------|-------|
-| `civic_plus` | CivicPlus CMS | Agenda centers, HTML parsing |
-| `aspnet_generic` | ASP.NET sites | Playwright-based for JS rendering |
-| `rss` | RSS/Atom feeds | Universal fallback |
-| `libcal` | LibCal/Springshare | Library events API |
-| `civic_rec` | CivicRec | Parks & recreation |
-| `metroparks` | Cleveland Metroparks | Regional parks |
+| Driver | File | Source Type | Notes |
+|--------|------|-------------|-------|
+| `civic_plus` | `civic_plus.py` | CivicPlus Agenda Center | HTML scraping, ~500 lines |
+| `civic_plus_rss` | `civic_plus_rss.py` | CivicPlus RSS feeds | Uses civicplus_utils.py |
+| `civic_plus_calendar` | `civic_plus_calendar.py` | CivicPlus Calendar | Uses civicplus_utils.py |
+| `civicplus_document_center` | `civicplus_document_center.py` | CivicPlus Document Center | Document archive scraping |
+| `aspnet_generic` | `aspnet_generic.py` | ASP.NET sites | Playwright-based for JS rendering |
+| `rss` | `rss.py` | RSS/Atom feeds | Universal fallback |
+| `libcal` | `libcal.py` | LibCal/Springshare | Library events API |
+| `icalendar` | `icalendar_driver.py` | iCalendar feeds | .ics file parsing |
+| `youtube_channel` | `youtube_channel.py` | YouTube channels | Video metadata extraction |
+| `tcsd_agendas` | `tcsd_agendas.py` | TCSD school board | Custom school board driver |
+
+## Shared Utilities
+
+### `civicplus_utils.py`
+
+Shared utilities for CivicPlus drivers (~250 lines):
+
+- **Date Parsing** - Extract dates from titles, URLs, compressed formats
+- **Type Inference** - Infer `EventType` and `DocumentType` from text
+- **URL Validation** - Validate document URLs vs navigation pages
+- **Title Cleaning** - Clean up meeting titles for display
+- **Module Constants** - CivicPlus module IDs (consistent across all sites)
+
+```python
+from civicplus_utils import (
+    extract_date_from_title,
+    extract_date_from_url,
+    infer_event_type,
+    infer_doc_type,
+    is_document_url,
+    clean_meeting_title,
+    CIVICPLUS_MODULES,
+)
+```
+
+**Note**: Category CIDs (like "City-Council-2") are site-specific and configured in the city's YAML config file under `civicplus.agenda_categories` and `civicplus.calendar_categories`.
 
 ## Adding a New Driver
 

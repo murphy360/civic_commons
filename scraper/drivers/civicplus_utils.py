@@ -248,4 +248,4 @@ CIVICPLUS_MODULES = {
 
 # Note: Category CIDs (like "City-Council-2") are site-specific and should
 # be configured in the city's YAML config file under civicplus.agenda_categories
-# and civicplus.calendar_categories.
+# and civicplus.calendar_categories. See configs/README.md for details.

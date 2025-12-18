@@ -59,7 +59,7 @@ npm run build
 ## Docker
 
 ```bash
-docker-compose up commons-admin
+docker compose up commons-admin
 # Access at http://localhost:3003
 ```
 

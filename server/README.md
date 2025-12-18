@@ -8,9 +8,9 @@ The API layer providing both MCP (Model Context Protocol) for LLM integration an
 /server
 ├── main.py              # FastMCP server entrypoint (stdio)
 ├── api_server.py        # FastAPI REST server
-├── config.py            # Configuration loading
+├── config.py            # Configuration loading (env vars + city YAML)
 ├── tools.py             # MCP tool definitions
-├── chat.py              # AI chat with Gemini
+├── chat.py              # AI chat with Gemini (configurable persona)
 ├── db.py                # Database queries
 └── auth.py              # API key authentication
 ```
@@ -20,13 +20,13 @@ The API layer providing both MCP (Model Context Protocol) for LLM integration an
 ### MCP Server (stdio transport)
 Used by LLM clients (Claude, etc.) for direct tool access:
 ```bash
-docker-compose up commons-mcp
+docker compose up commons-mcp
 ```
 
 ### REST API Server
 Used by web/admin apps:
 ```bash
-docker-compose up commons-api
+docker compose up commons-api
 ```
 
 ## MCP Tools
@@ -48,17 +48,33 @@ docker-compose up commons-api
 | `/events/{id}` | GET | Get event details |
 | `/documents` | GET | List documents |
 | `/documents/{id}` | GET | Get document details |
-| `/chat` | POST | AI chat with context |
+| `/chat` | POST | AI chat with configurable persona |
 | `/health` | GET | Health check |
+
+## Configurable Chat Persona
+
+The chat service loads assistant configuration from the city's YAML config:
+
+```yaml
+# configs/twinsburg.yaml
+assistant:
+  name: "Wilcox"
+  persona: "A helpful local historian..."
+  
+city_profile:
+  name: "Twinsburg, OH"
+```
+
+This drives the AI chat system prompt, making the assistant name and personality configurable per deployment.
 
 ## Running
 
 ```bash
 # MCP Server (Docker)
-docker-compose up commons-mcp
+docker compose up commons-mcp
 
 # API Server (Docker)
-docker-compose up commons-api
+docker compose up commons-api
 
 # Development (local)
 cd server
@@ -75,6 +91,7 @@ python api_server.py    # REST API
 | `MCP_API_KEY` | - | API key for authentication |
 | `MCP_PORT` | 8080 | Port for API server |
 | `GEMINI_API_KEY` | - | For AI chat features |
+| `DEFAULT_CONFIG` | twinsburg.yaml | City config file for persona |
 
 ## Authentication
 

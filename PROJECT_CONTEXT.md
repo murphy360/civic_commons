@@ -104,7 +104,7 @@ private_sources:
       delay_seconds: 5         # Respect FB rate limits
       max_concurrent: 1
 B. The Container Stack
-We use a 5-Service Microservice architecture in docker-compose.yml.
+We use a 6-Service Microservice architecture in docker-compose.yml.
 
 db (PostgreSQL 15)
 
