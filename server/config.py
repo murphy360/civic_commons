@@ -6,6 +6,10 @@ Loads environment variables and provides typed configuration.
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import yaml
 
 
 @dataclass
@@ -49,6 +53,7 @@ class Config:
 
 # Global config instance (lazy loaded)
 _config: Config | None = None
+_city_config: dict | None = None
 
 
 def get_config() -> Config:
@@ -57,3 +62,44 @@ def get_config() -> Config:
     if _config is None:
         _config = Config.from_env()
     return _config
+
+
+def get_city_config() -> dict:
+    """
+    Load city configuration from YAML file.
+    
+    Uses DEFAULT_CONFIG env var to find the config file.
+    Returns dict with city_profile, assistant, sources.
+    """
+    global _city_config
+    if _city_config is not None:
+        return _city_config
+    
+    # Find config file
+    config_name = os.environ.get("DEFAULT_CONFIG", "twinsburg.yaml")
+    
+    # Look in several locations
+    search_paths = [
+        Path(f"/app/configs/{config_name}"),  # Docker
+        Path(f"../configs/{config_name}"),     # Local dev from server/
+        Path(f"configs/{config_name}"),        # Local dev from root
+    ]
+    
+    config_path = None
+    for path in search_paths:
+        if path.exists():
+            config_path = path
+            break
+    
+    if config_path is None:
+        # Return defaults if no config found
+        _city_config = {
+            "city_profile": {"name": "Community", "zip": "00000", "timezone": "America/New_York"},
+            "assistant": {"name": "Assistant", "persona": "A helpful assistant for local civic information."},
+        }
+        return _city_config
+    
+    with open(config_path, "r", encoding="utf-8") as f:
+        _city_config = yaml.safe_load(f)
+    
+    return _city_config

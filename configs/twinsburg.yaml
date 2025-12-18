@@ -17,6 +17,38 @@ assistant:
   persona: "A helpful local historian who values accuracy and community context. Named after the Wilcox House, a historic landmark in Twinsburg."
 
 # =============================================================================
+# CIVICPLUS PLATFORM SETTINGS
+# =============================================================================
+# CivicPlus RSS feeds require category IDs (CID) that are site-specific.
+# These mappings allow the RSS driver to resolve friendly names to CIDs.
+civicplus:
+  # Agenda Center category CIDs (for RSS feeds)
+  agenda_categories:
+    city_council: "City-Council-2"
+    planning_commission: "Planning-Commission-4"
+    architecture_review_board: "Architecture-Review-Board-5"
+    board_of_zoning_appeals: "Board-of-Zoning-Appeals-3"
+    parks_recreation_commission: "Parks-Recreation-Commission-7"
+    finance_committee: "Finance-Committee-8"
+    safety_committee: "Safety-Committee-13"
+    environmental_commission: "Environmental-Commission-22"
+    civil_service_commission: "Civil-Service-Commission-9"
+    capital_improvement_board: "Capital-Improvement-Board-11"
+    jedi_committee: "Justice-Equity-Diversity-Inclusion-Commi-23"
+    public_hearing: "Public-Hearing-14"
+    all: "All-0"
+  
+  # Calendar category CIDs (for RSS feeds)
+  calendar_categories:
+    main: "Main-Calendar-14"
+    parks_recreation: "Parks-Recreation-22"
+    fitness_center: "Fitness-Center-24"
+    community_events: "Community-Events-25"
+    meetings: "Meetings-23"
+    around_town: "Around-Town-31"
+    all: "All-calendar.xml"
+
+# =============================================================================
 # PUBLIC DATA SOURCES
 # =============================================================================
 sources:

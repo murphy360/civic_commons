@@ -12,18 +12,19 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 
+from config import get_city_config
 from db import Database
 
 logger = logging.getLogger("civic_commons.chat")
 
 
-def get_system_prompt() -> str:
-    """Generate system prompt with current date/time."""
+def get_system_prompt(assistant_name: str = "Assistant", city_name: str = "your community") -> str:
+    """Generate system prompt with current date/time and configured assistant identity."""
     now = datetime.now()
     today = now.strftime("%A, %B %d, %Y")
     current_time = now.strftime("%I:%M %p")
     
-    return f"""You are TwinBot, a friendly and helpful AI assistant for the Civic Commons platform in Twinsburg, Ohio.
+    return f"""You are {assistant_name}, a friendly and helpful AI assistant for the Civic Commons platform in {city_name}.
 
 CURRENT DATE AND TIME: {today} at {current_time}
 
@@ -177,7 +178,13 @@ class ChatService:
         self.db = db
         self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
         self._client: Optional[httpx.AsyncClient] = None
-        self.city_id = "twinsburg"  # Default city
+        
+        # Load city config for assistant identity
+        city_config = get_city_config()
+        self.city_id = city_config.get("city_profile", {}).get("name", "community").lower().replace(" ", "_").replace(",", "")
+        self.city_name = city_config.get("city_profile", {}).get("name", "your community")
+        self.assistant_name = city_config.get("assistant", {}).get("name", "Assistant")
+        self.assistant_persona = city_config.get("assistant", {}).get("persona", "")
         
         if not self.api_key:
             logger.warning("No Gemini API key configured - chat disabled")
@@ -418,15 +425,15 @@ class ChatService:
         # Build Gemini conversation format
         contents = []
         
-        # Add system prompt as first exchange (with current date/time)
-        system_prompt = get_system_prompt()
+        # Add system prompt as first exchange (with current date/time and configured identity)
+        system_prompt = get_system_prompt(self.assistant_name, self.city_name)
         contents.append({
             "role": "user",
             "parts": [{"text": system_prompt}]
         })
         contents.append({
             "role": "model",
-            "parts": [{"text": "Got it! I'm TwinBot, ready to help Twinsburg residents explore civic information. I'll search first and show you what I find, then help you refine if needed. What would you like to know?"}]
+            "parts": [{"text": f"Got it! I'm {self.assistant_name}, ready to help {self.city_name} residents explore civic information. I'll search first and show you what I find, then help you refine if needed. What would you like to know?"}]
         })
         
         # Add conversation messages

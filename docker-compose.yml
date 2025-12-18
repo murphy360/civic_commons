@@ -108,6 +108,9 @@ services:
       API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
       MCP_PORT: 8080
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEFAULT_CONFIG: ${DEFAULT_CONFIG:-twinsburg.yaml}
+    volumes:
+      - ./configs:/app/configs:ro
     networks:
       - civic_network
 

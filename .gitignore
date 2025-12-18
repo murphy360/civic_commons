@@ -75,6 +75,7 @@ htmlcov/
 tmp/
 temp/
 *.tmp
+temp_*.html
 
 # Scraped data (local dev)
 downloads/

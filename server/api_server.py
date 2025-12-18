@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from config import get_config
+from config import get_config, get_city_config
 from db import Database
 from chat import ChatService
 
@@ -43,6 +43,17 @@ logger = logging.getLogger("civic_commons.api")
 # Global instances
 _db: Database | None = None
 _chat: ChatService | None = None
+_city_id: str | None = None
+
+
+def get_default_city_id() -> str:
+    """Get the default city ID from config."""
+    global _city_id
+    if _city_id is None:
+        city_config = get_city_config()
+        city_name = city_config.get("city_profile", {}).get("name", "community")
+        _city_id = city_name.lower().replace(" ", "_").replace(",", "")
+    return _city_id
 
 
 async def get_db() -> Database:
@@ -248,7 +259,7 @@ async def get_events(
     end = date.fromisoformat(end_date) if end_date else start + timedelta(days=30)
     
     events = await db.get_events(
-        city_id="twinsburg",
+        city_id=get_default_city_id(),
         start_date=start,
         end_date=end,
         source_type=source_type,
@@ -291,7 +302,7 @@ async def search_documents(
     db = await get_db()
     
     results = await db.search_documents(
-        city_id="twinsburg",
+        city_id=get_default_city_id(),
         query=query,
         source_type=source_type,
         limit=limit,
