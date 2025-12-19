@@ -607,7 +607,15 @@ export default async function AdminDashboard() {
 
           {/* Recent AI Processed */}
           <div className="rounded-lg border bg-card p-6">
-            <h2 className="font-semibold mb-4">🤖 Recently AI Processed</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold">🤖 Recently AI Processed</h2>
+              <Link 
+                href="/logs"
+                className="text-sm text-primary hover:underline"
+              >
+                View All Logs →
+              </Link>
+            </div>
             {recentAIProcessed.length > 0 ? (
               <div className="space-y-2">
                 {recentAIProcessed.map((item) => (

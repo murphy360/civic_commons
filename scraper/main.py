@@ -310,10 +310,27 @@ class Worker:
             logger.error(f"Error triggering cascade for document {document_id}: {e}")
 
     async def _initialize_all_sources(self, configs: list) -> None:
-        """Initialize all sources in the database."""
+        """Initialize all cities and sources in the database from config."""
         async with self.db_pool.acquire() as conn:
             for config in configs:
                 city_id = config.city_profile.name.lower().replace(" ", "_").replace(",", "")
+                
+                # Create/update city from config
+                display_name = config.city_profile.name
+                assistant_name = getattr(config.assistant, 'name', None) if hasattr(config, 'assistant') else None
+                assistant_persona = getattr(config.assistant, 'persona', None) if hasattr(config, 'assistant') else None
+                timezone = config.city_profile.timezone  # Required from config
+                
+                await self.db_pool.get_or_create_city(
+                    conn,
+                    city_id=city_id,
+                    display_name=display_name,
+                    assistant_name=assistant_name,
+                    assistant_persona=assistant_persona,
+                    timezone=timezone,
+                )
+                
+                # Initialize sources
                 all_sources = config.sources + config.private_sources
 
                 for source in all_sources:

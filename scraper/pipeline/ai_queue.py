@@ -29,13 +29,11 @@ class AIQueueProcessor:
 
     async def process_queue(self) -> None:
         """
-        Process documents and events that need AI analysis.
+        Process documents, events, and summaries that need AI analysis.
         
-        Processing order (strict priority):
-        Phase 1: Date-based linking (NO AI, NO SPEED LIMIT)
-        Phase 2: AI-assisted linking (uses batch_size)
-        Phase 3: Generate document summaries (uses batch_size)
-        Phase 4: Generate event summaries (uses batch_size)
+        Uses a unified date-based approach - most recent items first,
+        regardless of type. Documents, events, and summaries are all
+        processed together in date order.
         """
         batch_size = self.settings.ai_queue_batch_size
         logger.info("AI analysis queue: Starting processing run...")
@@ -46,46 +44,104 @@ class AIQueueProcessor:
 
         try:
             async with self.db_pool.acquire() as conn:
-                # Phase 1: Date-based linking (NO SPEED LIMIT)
+                # Still do date-based linking first (fast, no AI)
                 await self.document_linker.process_date_based_linking(conn)
 
-                # Phase 2: AI-assisted linking
-                pending_date = await self.document_linker.get_date_linkable_count(conn)
-                if pending_date > 0:
-                    logger.info(f"AI analysis queue: {pending_date} docs still date-linkable, skipping AI phases")
-                    return
-
-                await self.document_linker.process_ai_linking(conn, batch_size)
-
-                # Phase 3: Generate document summaries
-                pending_ai = await self.document_linker.get_ai_linkable_count(conn)
-                if pending_ai > 0:
-                    logger.info(f"AI analysis queue: {pending_ai} docs pending AI linking, skipping summaries")
-                    return
-
-                await self._process_document_summaries(conn, batch_size)
-
-                # Phase 4: Generate event summaries
-                max_age_days = int(os.getenv("AI_SUMMARY_MAX_AGE_DAYS", "365"))
-                pending_summaries = await conn.fetchval("""
-                    SELECT COUNT(*) FROM documents d
-                    LEFT JOIN event_documents ed ON d.id = ed.document_id
-                    LEFT JOIN events e ON ed.event_id = e.id
-                    WHERE (d.ai_summary IS NULL OR d.ai_summary = '') 
-                      AND d.local_path IS NOT NULL
-                      AND d.document_type NOT IN ('ordinance', 'resolution')
-                      AND COALESCE(d.meeting_date, e.start_time) >= NOW() - INTERVAL '1 day' * $1
-                """, max_age_days)
-                if pending_summaries > 0:
-                    logger.info(f"AI analysis queue: {pending_summaries} docs need summaries, skipping event summaries")
-                    return
-
-                await self._process_event_summaries(conn, batch_size)
+                # Process unified queue - documents, events, and summaries by date
+                await self._process_unified_queue(conn, batch_size)
 
             logger.info("AI analysis queue: Processing run complete")
 
         except Exception as e:
             logger.error(f"AI analysis queue error: {e}")
+
+    async def _process_unified_queue(self, conn, batch_size: int) -> None:
+        """
+        Process all pending items (documents, events, summaries) in a unified
+        date-ordered queue. Most recent items are processed first.
+        """
+        max_age_days = int(os.getenv("AI_SUMMARY_MAX_AGE_DAYS", "365"))
+        # If 0, use a very large number (100 years = no limit)
+        effective_max_age = max_age_days if max_age_days > 0 else 36500
+        
+        # Get unified queue of all pending items ordered by date
+        items = await conn.fetch("""
+            SELECT * FROM (
+                -- Documents needing AI summary
+                SELECT 
+                    id,
+                    'document'::text as item_type,
+                    title,
+                    document_type,
+                    NULL as summary_type,
+                    COALESCE(meeting_date, created_at) as item_date,
+                    content_markdown,
+                    local_path,
+                    source_url,
+                    linking_status
+                FROM documents
+                WHERE (ai_summary IS NULL OR ai_summary = '')
+                  AND COALESCE(ai_summary, '') NOT LIKE '[AI_SUMMARY_FAILED]%'
+                  AND (local_path IS NOT NULL OR (document_type = 'video' AND source_url LIKE '%youtu%'))
+                  AND COALESCE(meeting_date, created_at) >= NOW() - INTERVAL '1 day' * $1
+                
+                UNION ALL
+                
+                -- Events needing AI summary
+                SELECT 
+                    id,
+                    'event'::text as item_type,
+                    title,
+                    NULL as document_type,
+                    NULL as summary_type,
+                    COALESCE(start_time, created_at) as item_date,
+                    NULL as content_markdown,
+                    NULL as local_path,
+                    NULL as source_url,
+                    NULL as linking_status
+                FROM events
+                WHERE (ai_summary IS NULL OR ai_summary = '')
+                  AND COALESCE(ai_summary, '') NOT LIKE '[AI_SUMMARY_FAILED]%'
+                  AND COALESCE(start_time, created_at) >= NOW() - INTERVAL '1 day' * $1
+                
+                UNION ALL
+                
+                -- Summaries needing generation (weekly, monthly, quarterly, annual)
+                SELECT 
+                    id,
+                    'summary'::text as item_type,
+                    COALESCE(title, summary_type || ' Summary') as title,
+                    NULL as document_type,
+                    summary_type,
+                    period_end as item_date,
+                    NULL as content_markdown,
+                    NULL as local_path,
+                    NULL as source_url,
+                    NULL as linking_status
+                FROM summaries
+                WHERE status IN ('pending', 'generating', 'stale')
+                  AND period_end >= NOW() - INTERVAL '1 day' * $1
+            ) AS unified_queue
+            ORDER BY item_date DESC NULLS LAST
+            LIMIT $2
+        """, effective_max_age, batch_size)
+
+        if not items:
+            logger.debug("AI analysis queue: No items pending")
+            return
+
+        logger.info(f"AI analysis queue: Processing {len(items)} items from unified queue")
+
+        for item in items:
+            try:
+                if item['item_type'] == 'document':
+                    await self._process_single_document_summary(conn, dict(item))
+                elif item['item_type'] == 'event':
+                    await self._process_single_event_summary(conn, dict(item))
+                elif item['item_type'] == 'summary':
+                    await self._process_single_summary(conn, dict(item))
+            except Exception as e:
+                logger.warning(f"Failed to process {item['item_type']} '{item['title']}': {e}")
 
     async def _process_document_summaries(self, conn, batch_size: int) -> None:
         """Generate AI summaries for documents that don't have them."""
@@ -105,6 +161,14 @@ class AIQueueProcessor:
               {age_filter}
             ORDER BY 
                 summary_priority DESC NULLS LAST,
+                -- Prioritize: 1) current year docs, 2) current year legislation, 3) older legislation, 4) older docs
+                CASE 
+                    WHEN meeting_date >= DATE_TRUNC('year', NOW()) THEN 0  -- Current year with date
+                    WHEN document_type IN ('ordinance', 'resolution') AND title ~ '-25[^0-9]' THEN 1  -- 2025 legislation
+                    WHEN document_type IN ('ordinance', 'resolution') THEN 2  -- Other legislation
+                    WHEN meeting_date IS NOT NULL THEN 3  -- Has date but older
+                    ELSE 4  -- No date
+                END,
                 meeting_date DESC NULLS LAST,
                 CASE WHEN linking_status = 'needs_summary' THEN 0 ELSE 1 END,
                 CASE 
@@ -193,12 +257,82 @@ class AIQueueProcessor:
                         UPDATE documents SET linking_status = 'pending' WHERE id = $1
                     """, doc["id"])
             else:
+                # Mark as failed with a special marker so we don't retry forever
+                # Use a special value that indicates permanent failure
                 await conn.execute("""
-                    UPDATE documents SET ai_summary = '' WHERE id = $1
+                    UPDATE documents SET ai_summary = '[AI_SUMMARY_FAILED]' WHERE id = $1
                 """, doc["id"])
+                logger.warning(f"Marked document '{doc['title']}' as AI summary failed")
 
         except Exception as e:
             logger.warning(f"AI analysis failed for '{doc['title']}': {e}")
+
+    async def _process_single_event_summary(self, conn, item: dict) -> None:
+        """Process a single event for AI summary from unified queue."""
+        event_id = item["id"]
+        
+        # Check if event has linked documents with summaries
+        doc_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM event_documents ed
+            JOIN documents d ON ed.document_id = d.id
+            WHERE ed.event_id = $1 
+              AND d.ai_summary IS NOT NULL 
+              AND d.ai_summary != ''
+              AND d.ai_summary != '[AI_SUMMARY_FAILED]'
+        """, event_id)
+        
+        if doc_count == 0:
+            logger.debug(f"Event '{item['title']}' has no summarized documents yet, skipping")
+            return
+        
+        await self.generate_event_summary(conn, event_id)
+
+    async def _process_single_summary(self, conn, item: dict) -> None:
+        """Process a single period summary (weekly/monthly/quarterly/annual) from unified queue."""
+        from .ai.cascade import SummaryCascadeManager, SummaryType
+        
+        summary_id = item["id"]
+        summary_type_str = item["summary_type"]
+        
+        try:
+            # Get the full summary record with city name
+            summary = await conn.fetchrow("""
+                SELECT s.id, s.city_id, s.summary_type, s.period_start, s.period_end, 
+                       s.status, s.event_id, c.display_name as city_name
+                FROM summaries s
+                JOIN cities c ON s.city_id = c.city_id
+                WHERE s.id = $1
+            """, summary_id)
+            
+            if not summary:
+                return
+            
+            # Map string type to enum
+            type_map = {
+                'event': SummaryType.EVENT,
+                'daily': SummaryType.DAILY,
+                'weekly': SummaryType.WEEKLY,
+                'monthly': SummaryType.MONTHLY,
+                'quarterly': SummaryType.QUARTERLY,
+                'annual': SummaryType.ANNUAL,
+            }
+            summary_type = type_map.get(summary_type_str)
+            if not summary_type:
+                logger.warning(f"Unknown summary type: {summary_type_str}")
+                return
+            
+            # Use cascade system to regenerate the summary
+            cascade = SummaryCascadeManager(self.db_pool, self.ai_processor)
+            await cascade._regenerate_summary(conn, summary, summary_type)
+            
+            logger.info(f"Generated {summary_type_str} summary for period ending {item['item_date']}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate {summary_type_str} summary: {e}")
+            # Mark as failed
+            await conn.execute("""
+                UPDATE summaries SET status = 'failed', error_message = $2 WHERE id = $1
+            """, summary_id, str(e)[:500])
 
     async def _extract_legislation(self, conn, doc: dict, doc_type: str) -> None:
         """Extract and store legislation mentions from a document."""

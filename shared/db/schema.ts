@@ -23,7 +23,7 @@ export const cities = pgTable('cities', {
   displayName: varchar('display_name', { length: 256 }).notNull(),
   assistantName: varchar('assistant_name', { length: 128 }),
   assistantPersona: text('assistant_persona'),
-  timezone: varchar('timezone', { length: 64 }).default('America/New_York'),
+  timezone: varchar('timezone', { length: 64 }),  // Should come from config
   metadata: jsonb('metadata').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

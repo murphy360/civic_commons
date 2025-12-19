@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 from .base import BaseDriver
 from models import Event, Document, EventType
 
-# Default timezone for Twinsburg, OH
-LOCAL_TIMEZONE = ZoneInfo("America/New_York")
+# Default timezone fallback (should come from config)
+DEFAULT_TIMEZONE = "America/New_York"
 
 
 class ICalendarDriver(BaseDriver):
@@ -46,6 +46,11 @@ class ICalendarDriver(BaseDriver):
         "arb", "bza", "jedi", "civil service", "environmental",
         "public works", "finance", "safety", "parks"
     ]
+
+    def _get_local_timezone(self) -> ZoneInfo:
+        """Get the local timezone from config, with fallback."""
+        tz_name = self.params.get("timezone", DEFAULT_TIMEZONE)
+        return ZoneInfo(tz_name)
 
     async def fetch(self) -> tuple[list[Event], list[Document]]:
         """Fetch events from iCalendar feed."""
@@ -191,7 +196,8 @@ class ICalendarDriver(BaseDriver):
             if isinstance(dt, datetime):
                 if dt.tzinfo:
                     # Convert timezone-aware datetime to local timezone, then make naive
-                    local_dt = dt.astimezone(LOCAL_TIMEZONE)
+                    local_tz = self._get_local_timezone()
+                    local_dt = dt.astimezone(local_tz)
                     return local_dt.replace(tzinfo=None)
                 else:
                     # Naive datetime - assume it's already in local time

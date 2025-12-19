@@ -69,6 +69,70 @@ class DatabasePool:
         return self._pool.acquire()
 
     # =========================================================================
+    # CITY OPERATIONS
+    # =========================================================================
+
+    async def get_or_create_city(
+        self,
+        conn: asyncpg.Connection,
+        city_id: str,
+        display_name: str,
+        assistant_name: str = None,
+        assistant_persona: str = None,
+        timezone: str = None,
+    ) -> str:
+        """
+        Get existing city or create new one from config.
+        
+        Args:
+            conn: Database connection
+            city_id: City identifier (e.g., 'twinsburg_oh')
+            display_name: Human-readable city name (e.g., 'Twinsburg, Ohio')
+            assistant_name: Name of the AI assistant
+            assistant_persona: Persona description for the assistant
+            timezone: City timezone
+        
+        Returns:
+            City ID (string)
+        """
+        # Try to find existing
+        row = await conn.fetchrow(
+            "SELECT city_id FROM cities WHERE city_id = $1",
+            city_id,
+        )
+        
+        if row:
+            # Update existing city with current config values
+            await conn.execute(
+                """
+                UPDATE cities 
+                SET display_name = $2, assistant_name = $3, assistant_persona = $4, timezone = $5, updated_at = NOW()
+                WHERE city_id = $1
+                """,
+                city_id,
+                display_name,
+                assistant_name,
+                assistant_persona,
+                timezone,
+            )
+            return city_id
+
+        # Create new city
+        await conn.execute(
+            """
+            INSERT INTO cities (city_id, display_name, assistant_name, assistant_persona, timezone)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            city_id,
+            display_name,
+            assistant_name,
+            assistant_persona,
+            timezone,
+        )
+        logger.info(f"Created city: {city_id} ({display_name})")
+        return city_id
+
+    # =========================================================================
     # SOURCE OPERATIONS
     # =========================================================================
 
@@ -78,7 +142,7 @@ class DatabasePool:
         name: str,
         driver: str,
         config: dict,
-        city_id: str = "twinsburg",
+        city_id: str,
         is_enabled: bool = True,
         schedule: str = "",
     ) -> int:

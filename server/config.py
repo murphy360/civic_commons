@@ -92,9 +92,9 @@ def get_city_config() -> dict:
             break
     
     if config_path is None:
-        # Return defaults if no config found
+        # Return defaults if no config found - timezone should be set in config!
         _city_config = {
-            "city_profile": {"name": "Community", "zip": "00000", "timezone": "America/New_York"},
+            "city_profile": {"name": "Community", "zip": "00000", "timezone": "UTC"},
             "assistant": {"name": "Assistant", "persona": "A helpful assistant for local civic information."},
         }
         return _city_config

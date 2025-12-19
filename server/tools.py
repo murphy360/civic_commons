@@ -183,7 +183,7 @@ def register_tools(mcp: FastMCP, db: Database) -> None:
                 "name": config.get("assistant_name", "Commons Assistant"),
                 "persona": config.get("assistant_persona"),
             },
-            "timezone": config.get("timezone", "America/New_York"),
+            "timezone": config.get("timezone"),  # Should come from config
             "metadata": config.get("metadata", {}),
         }
     

@@ -86,7 +86,7 @@ class CityProfile(BaseModel):
     """City identity information."""
     name: str
     zip: str
-    timezone: str = "America/New_York"
+    timezone: str  # Required - must be set in config (e.g., "America/New_York")
 
 
 class AssistantConfig(BaseModel):
