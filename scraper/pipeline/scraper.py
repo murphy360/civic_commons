@@ -77,11 +77,14 @@ class ScraperExecutor:
 
             if self.db_pool:
                 async with self.db_pool.acquire() as conn:
+                    # Generate city_id from city name (same logic as main.py)
+                    city_id = config.city_profile.name.lower().replace(" ", "_").replace(",", "")
                     await self._store_results(
                         conn=conn,
                         source=source,
                         events=events,
                         documents=documents,
+                        city_id=city_id,
                         city_name=config.city_profile.name,
                     )
 
@@ -92,7 +95,7 @@ class ScraperExecutor:
             logger.error(f"Scrape failed: {source.name} - {e}")
             raise
 
-    async def _store_results(self, conn, source, events: list, documents: list, city_name: str = "") -> None:
+    async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "") -> None:
         """Store scraped results in database and download documents."""
         if not events and not documents:
             return
@@ -102,6 +105,7 @@ class ScraperExecutor:
             name=source.name,
             driver=source.driver,
             config=source.params,
+            city_id=city_id,
             is_enabled=source.enabled,
             schedule=source.schedule,
         )

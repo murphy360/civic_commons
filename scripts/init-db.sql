@@ -8,6 +8,17 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
 -- =============================================================================
+-- Helper Functions (must be defined before triggers that use them)
+-- =============================================================================
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- =============================================================================
 -- Custom Types
 -- =============================================================================
 
@@ -342,16 +353,8 @@ CREATE INDEX IF NOT EXISTS scraper_logs_status_idx ON scraper_logs(status);
 CREATE INDEX IF NOT EXISTS scraper_logs_created_at_idx ON scraper_logs(created_at);
 
 -- =============================================================================
--- Update Timestamp Trigger
+-- Update Timestamp Triggers (function defined at top of file)
 -- =============================================================================
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
-
 -- Apply to all tables with updated_at
 CREATE TRIGGER update_cities_updated_at BEFORE UPDATE ON cities
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
