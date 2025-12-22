@@ -535,9 +535,14 @@ export default async function AdminDashboard() {
           <div className="rounded-lg border bg-card p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="font-semibold">Processing Queue</h2>
-              <span className="text-xs text-muted-foreground">
-                Every {AI_QUEUE_INTERVAL_SECONDS}s ({AI_QUEUE_BATCH_SIZE}/batch)
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted-foreground">
+                  Every {AI_QUEUE_INTERVAL_SECONDS}s ({AI_QUEUE_BATCH_SIZE}/batch)
+                </span>
+                <Link href="/queue" className="text-xs text-primary hover:underline">
+                  View Full Queue →
+                </Link>
+              </div>
             </div>
             
             {/* Queue Status Boxes */}

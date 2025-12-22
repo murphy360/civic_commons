@@ -49,6 +49,8 @@ class YouTubeChannelDriver(BaseDriver):
         r'\d{1,2}/\d{1,2}/\d{4}',
         # "2025-01-28"
         r'\d{4}-\d{2}-\d{2}',
+        # "11/20" or "1/5" (short month/day - will assume current/recent year)
+        r'\b\d{1,2}/\d{1,2}\b(?!/)',  # Negative lookahead to avoid matching part of m/d/yyyy
     ]
 
     async def fetch(self) -> tuple[list[Event], list[Document]]:
@@ -247,6 +249,7 @@ class YouTubeChannelDriver(BaseDriver):
         Government video titles usually include the meeting date:
         - "City of Twinsburg Council Meeting - January 28, 2025"
         - "Planning Commission Special Meeting - May 27, 2025"
+        - "Board of Education Meeting 11/20" (short format)
         """
         for pattern in self.DATE_PATTERNS:
             match = re.search(pattern, title)
@@ -266,6 +269,20 @@ class YouTubeChannelDriver(BaseDriver):
                             return datetime.strptime(date_str.replace(",", "").strip(), fmt.replace(",", ""))
                         except ValueError:
                             continue
+                    
+                    # Try short date format (m/d without year)
+                    if re.match(r'^\d{1,2}/\d{1,2}$', date_str):
+                        current_year = datetime.now().year
+                        try:
+                            # Try current year first
+                            parsed = datetime.strptime(f"{date_str}/{current_year}", "%m/%d/%Y")
+                            # If the date is more than 6 months in the future, assume last year
+                            if (parsed - datetime.now()).days > 180:
+                                parsed = datetime.strptime(f"{date_str}/{current_year - 1}", "%m/%d/%Y")
+                            return parsed
+                        except ValueError:
+                            continue
+                            
                 except Exception:
                     pass
         

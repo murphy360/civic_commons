@@ -19,12 +19,14 @@ class AIQueueProcessor:
     """Processes the AI analysis queue in priority order."""
 
     def __init__(self, db_pool, doc_summarizer, ai_processor, document_linker, settings,
+                 queue_manager=None,
                  on_document_processed: Optional[CascadeCallback] = None):
         self.db_pool = db_pool
         self.doc_summarizer = doc_summarizer
         self.ai_processor = ai_processor
         self.document_linker = document_linker
         self.settings = settings
+        self.queue_manager = queue_manager
         self._on_document_processed = on_document_processed
 
     async def process_queue(self) -> None:
@@ -57,88 +59,64 @@ class AIQueueProcessor:
 
     async def _process_unified_queue(self, conn, batch_size: int) -> None:
         """
-        Process all pending items (documents, events, summaries) in a unified
-        date-ordered queue. Most recent items are processed first.
+        Process all pending items (documents, events, summaries) with proper
+        dependency ordering:
+        
+        1. PDF Documents (extracted) - highest priority
+        2. Videos - same tier as documents
+        3. Events - only when ALL linked documents have AI summaries
+        4. Summaries - only when events in period are summarized
         """
         max_age_days = int(os.getenv("AI_SUMMARY_MAX_AGE_DAYS", "365"))
-        # If 0, use a very large number (100 years = no limit)
-        effective_max_age = max_age_days if max_age_days > 0 else 36500
         
-        # Get unified queue of all pending items ordered by date
-        items = await conn.fetch("""
-            SELECT * FROM (
-                -- Documents needing AI summary
+        # Use queue_manager for proper dependency-aware ordering
+        if self.queue_manager:
+            items = await self.queue_manager.get_ai_queue(conn, limit=batch_size, max_age_days=max_age_days)
+        else:
+            # Fallback to simple query if no queue_manager
+            logger.warning("AI queue: No queue_manager, using fallback query")
+            items = await conn.fetch("""
                 SELECT 
                     id,
                     'document'::text as item_type,
                     title,
                     document_type,
-                    NULL as summary_type,
+                    NULL::varchar as summary_type,
                     COALESCE(meeting_date, created_at) as item_date,
                     content_markdown,
                     local_path,
-                    source_url,
-                    linking_status
+                    source_url
                 FROM documents
                 WHERE (ai_summary IS NULL OR ai_summary = '')
-                  AND COALESCE(ai_summary, '') NOT LIKE '[AI_SUMMARY_FAILED]%'
-                  AND (local_path IS NOT NULL OR (document_type = 'video' AND source_url LIKE '%youtu%'))
-                  AND COALESCE(meeting_date, created_at) >= NOW() - INTERVAL '1 day' * $1
-                
-                UNION ALL
-                
-                -- Events needing AI summary
-                SELECT 
-                    id,
-                    'event'::text as item_type,
-                    title,
-                    NULL as document_type,
-                    NULL as summary_type,
-                    COALESCE(start_time, created_at) as item_date,
-                    NULL as content_markdown,
-                    NULL as local_path,
-                    NULL as source_url,
-                    NULL as linking_status
-                FROM events
-                WHERE (ai_summary IS NULL OR ai_summary = '')
-                  AND COALESCE(ai_summary, '') NOT LIKE '[AI_SUMMARY_FAILED]%'
-                  AND COALESCE(start_time, created_at) >= NOW() - INTERVAL '1 day' * $1
-                
-                UNION ALL
-                
-                -- Summaries needing generation (weekly, monthly, quarterly, annual)
-                SELECT 
-                    id,
-                    'summary'::text as item_type,
-                    COALESCE(title, summary_type || ' Summary') as title,
-                    NULL as document_type,
-                    summary_type,
-                    period_end as item_date,
-                    NULL as content_markdown,
-                    NULL as local_path,
-                    NULL as source_url,
-                    NULL as linking_status
-                FROM summaries
-                WHERE status IN ('pending', 'generating', 'stale')
-                  AND period_end >= NOW() - INTERVAL '1 day' * $1
-            ) AS unified_queue
-            ORDER BY item_date DESC NULLS LAST
-            LIMIT $2
-        """, effective_max_age, batch_size)
+                  AND content_status IN ('extracted', 'ai_pending')
+                  AND content_markdown IS NOT NULL
+                ORDER BY meeting_date DESC NULLS LAST
+                LIMIT $1
+            """, batch_size)
 
         if not items:
             logger.debug("AI analysis queue: No items pending")
             return
 
-        logger.info(f"AI analysis queue: Processing {len(items)} items from unified queue")
+        # Log what we're processing
+        item_types = {}
+        for item in items:
+            t = item['item_type']
+            item_types[t] = item_types.get(t, 0) + 1
+        logger.info(f"AI analysis queue: Processing {len(items)} items from unified queue ({item_types})")
 
         for item in items:
             try:
-                if item['item_type'] == 'document':
+                item_type = item['item_type']
+                logger.debug(f"AI queue: Processing {item_type} '{item['title']}'")
+                if item_type == 'document':
                     await self._process_single_document_summary(conn, dict(item))
-                elif item['item_type'] == 'event':
+                elif item_type == 'video':
+                    # Videos are processed as documents but with transcription
+                    await self._process_single_document_summary(conn, dict(item))
+                elif item_type == 'event':
                     await self._process_single_event_summary(conn, dict(item))
-                elif item['item_type'] == 'summary':
+                elif item_type == 'summary':
                     await self._process_single_summary(conn, dict(item))
             except Exception as e:
                 logger.warning(f"Failed to process {item['item_type']} '{item['title']}': {e}")
@@ -191,7 +169,12 @@ class AIQueueProcessor:
 
     async def _process_single_document_summary(self, conn, doc: dict) -> None:
         """Process a single document for AI summary."""
+        MAX_AI_RETRIES = 3
+        
         try:
+            # Check current retry count
+            current_retries = doc.get("retry_count", 0) or 0
+            
             # Check for YouTube video
             video_url = None
             if doc["document_type"] == "video" and doc["source_url"]:
@@ -260,12 +243,39 @@ class AIQueueProcessor:
                 # Mark as failed with a special marker so we don't retry forever
                 # Use a special value that indicates permanent failure
                 await conn.execute("""
-                    UPDATE documents SET ai_summary = '[AI_SUMMARY_FAILED]' WHERE id = $1
+                    UPDATE documents 
+                    SET ai_summary = '[AI_SUMMARY_FAILED]',
+                        content_status = 'failed',
+                        error_message = 'AI summary generation returned no result'
+                    WHERE id = $1
                 """, doc["id"])
-                logger.warning(f"Marked document '{doc['title']}' as AI summary failed")
+                logger.warning(f"Marked document '{doc['title']}' as AI summary failed (no result)")
 
         except Exception as e:
-            logger.warning(f"AI analysis failed for '{doc['title']}': {e}")
+            # Increment retry count
+            new_retry_count = (doc.get("retry_count", 0) or 0) + 1
+            error_msg = str(e)[:500]  # Truncate long error messages
+            
+            if new_retry_count >= MAX_AI_RETRIES:
+                # Max retries reached - mark as permanently failed
+                await conn.execute("""
+                    UPDATE documents 
+                    SET ai_summary = '[AI_SUMMARY_FAILED]',
+                        content_status = 'failed',
+                        retry_count = $2,
+                        error_message = $3
+                    WHERE id = $1
+                """, doc["id"], new_retry_count, f"AI failed after {MAX_AI_RETRIES} attempts: {error_msg}")
+                logger.error(f"AI analysis permanently failed for '{doc['title']}' after {MAX_AI_RETRIES} attempts: {e}")
+            else:
+                # Increment retry count but keep in queue
+                await conn.execute("""
+                    UPDATE documents 
+                    SET retry_count = $2,
+                        error_message = $3
+                    WHERE id = $1
+                """, doc["id"], new_retry_count, f"AI attempt {new_retry_count} failed: {error_msg}")
+                logger.warning(f"AI analysis failed for '{doc['title']}' (attempt {new_retry_count}/{MAX_AI_RETRIES}): {e}")
 
     async def _process_single_event_summary(self, conn, item: dict) -> None:
         """Process a single event for AI summary from unified queue."""

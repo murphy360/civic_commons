@@ -799,6 +799,8 @@ class DatabasePool:
                 ai_summary = $1,
                 ai_summary_updated_at = $2,
                 ai_model_used = $3,
+                content_status = 'completed',
+                ai_completed_at = $2,
                 updated_at = $2
             WHERE id = $4
             """,

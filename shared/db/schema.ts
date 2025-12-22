@@ -102,6 +102,19 @@ export const eventsRelations = relations(events, ({ one }) => ({
 // =============================================================================
 // Documents
 // =============================================================================
+// Content lifecycle statuses:
+//   discovered        - Found by scraper, metadata only (visible as placeholder)
+//   download_pending  - Queued for download
+//   downloading       - Currently downloading
+//   downloaded        - File saved locally
+//   extraction_pending - Queued for text extraction
+//   extracting        - Currently extracting text
+//   extracted         - Text available
+//   ai_pending        - Queued for AI summary
+//   ai_processing     - AI generating summary
+//   complete          - Fully processed
+//   failed            - Processing failed
+//   skipped           - Non-processable content
 
 export const documents = pgTable('documents', {
   id: serial('id').primaryKey(),
@@ -114,7 +127,27 @@ export const documents = pgTable('documents', {
   sourceUrl: text('source_url'),
   fileUrl: text('file_url'),
   fileHash: varchar('file_hash', { length: 64 }),
+  localPath: text('local_path'),
+  fileSizeBytes: integer('file_size_bytes'),
+  mimeType: varchar('mime_type', { length: 128 }),
+  aiSummary: text('ai_summary'),
+  aiSummaryUpdatedAt: timestamp('ai_summary_updated_at'),
+  aiModelUsed: varchar('ai_model_used', { length: 64 }),
   publishedDate: timestamp('published_date'),
+  meetingDate: timestamp('meeting_date'),
+  // Unified content lifecycle tracking
+  contentStatus: varchar('content_status', { length: 32 }).default('discovered'),
+  errorMessage: text('error_message'),
+  retryCount: integer('retry_count').default(0),
+  retryAfter: timestamp('retry_after'),
+  // Processing timestamps
+  discoveredAt: timestamp('discovered_at'),
+  downloadStartedAt: timestamp('download_started_at'),
+  downloadCompletedAt: timestamp('download_completed_at'),
+  extractionStartedAt: timestamp('extraction_started_at'),
+  extractionCompletedAt: timestamp('extraction_completed_at'),
+  aiStartedAt: timestamp('ai_started_at'),
+  aiCompletedAt: timestamp('ai_completed_at'),
   rawData: jsonb('raw_data').$type<Record<string, unknown>>(),
   // Note: search_vector is managed via PostgreSQL trigger
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -124,6 +157,7 @@ export const documents = pgTable('documents', {
   documentTypeIdx: index('documents_document_type_idx').on(table.documentType),
   publishedDateIdx: index('documents_published_date_idx').on(table.publishedDate),
   externalIdIdx: index('documents_external_id_idx').on(table.sourceId, table.externalId),
+  contentStatusIdx: index('documents_content_status_idx').on(table.contentStatus),
 }));
 
 export const documentsRelations = relations(documents, ({ one }) => ({

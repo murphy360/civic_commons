@@ -2,6 +2,8 @@
 Scraper execution and result storage.
 
 Handles running drivers and persisting results to the database.
+Documents are registered as "discovered" immediately (visible in UI),
+then processed asynchronously through the queue system.
 """
 
 import logging
@@ -9,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from models import Document, Event
+from .queue_manager import QueueManager, ContentStatus
 
 logger = logging.getLogger("civic.scraper")
 
@@ -16,10 +19,11 @@ logger = logging.getLogger("civic.scraper")
 class ScraperExecutor:
     """Executes scraping jobs and stores results."""
 
-    def __init__(self, db_pool, ai_processor=None, document_downloader=None):
+    def __init__(self, db_pool, ai_processor=None, document_downloader=None, queue_manager: QueueManager = None):
         self.db_pool = db_pool
         self.ai_processor = ai_processor
         self.document_downloader = document_downloader
+        self.queue_manager = queue_manager
 
     async def scrape_source(
         self,
@@ -96,7 +100,12 @@ class ScraperExecutor:
             raise
 
     async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "") -> None:
-        """Store scraped results in database and download documents."""
+        """
+        Store scraped results in database.
+        
+        Documents are registered as "discovered" - immediately visible in UI
+        but queued for async download/processing. No inline downloads.
+        """
         if not events and not documents:
             return
 
@@ -121,26 +130,105 @@ class ScraperExecutor:
                 )
                 logger.debug(f"Stored event: {event.title} -> {event_id}")
 
+                # Register event documents as discovered (visible immediately)
                 for document in event.documents:
                     try:
-                        doc_id = await self.db_pool.upsert_document(
+                        doc_id = await self._register_discovered_document(
                             conn, source_id, document, event_id=event_id
                         )
-                        await self._download_document(conn, document, doc_id, source.name)
+                        logger.debug(f"Registered event document: {document.title} -> {doc_id}")
                     except Exception as e:
-                        logger.error(f"Failed to store event document '{document.title}': {e}")
+                        logger.error(f"Failed to register event document '{document.title}': {e}")
 
             except Exception as e:
                 logger.error(f"Failed to store event '{event.title}': {e}")
 
-        # Store standalone documents
+        # Register standalone documents as discovered
         for document in documents:
             try:
-                doc_id = await self.db_pool.upsert_document(conn, source_id, document)
-                logger.debug(f"Stored standalone document: {document.title} -> {doc_id}")
-                await self._download_document(conn, document, doc_id, source.name)
+                doc_id = await self._register_discovered_document(conn, source_id, document)
+                logger.debug(f"Registered standalone document: {document.title} -> {doc_id}")
             except Exception as e:
-                logger.error(f"Failed to store document '{document.title}': {e}")
+                logger.error(f"Failed to register document '{document.title}': {e}")
+
+        await self.db_pool.update_source_health(conn, source_id, success=True)
+        logger.info(f"Completed storing results for {source.name}: {len(events)} events, {len(documents)} documents")
+
+    async def _register_discovered_document(
+        self, 
+        conn, 
+        source_id: int, 
+        document: Document, 
+        event_id: int = None
+    ) -> int:
+        """
+        Register a document as discovered.
+        Creates a placeholder that's immediately visible in the UI.
+        Document will be queued for download/processing asynchronously.
+        """
+        # Extract document type
+        doc_type = None
+        if hasattr(document, 'doc_type') and document.doc_type:
+            doc_type = str(document.doc_type.value) if hasattr(document.doc_type, 'value') else str(document.doc_type)
+        
+        # Extract meeting date
+        meeting_date = None
+        if hasattr(document, 'meeting_date') and document.meeting_date:
+            meeting_date = document.meeting_date
+        elif hasattr(document, 'published_at') and document.published_at:
+            meeting_date = document.published_at
+        
+        # Get external ID
+        external_id = getattr(document, 'external_id', None) or getattr(document, 'id', None)
+        if external_id:
+            external_id = str(external_id)
+        
+        # Get source URL
+        source_url = document.original_url or getattr(document, 'file_url', None)
+        
+        # Determine initial status based on content type
+        is_video = doc_type == 'video' or (source_url and ('youtu' in source_url.lower()))
+        initial_status = ContentStatus.AI_PENDING.value if is_video else ContentStatus.DISCOVERED.value
+        
+        # Check if document already exists
+        existing = await conn.fetchrow("""
+            SELECT id, content_status FROM documents 
+            WHERE source_id = $1 AND (
+                (external_id IS NOT NULL AND external_id = $2)
+                OR (source_url IS NOT NULL AND source_url = $3)
+            )
+        """, source_id, external_id, source_url)
+        
+        if existing:
+            # Update meeting_date if we have a better one
+            if meeting_date and not existing.get('meeting_date'):
+                await conn.execute("""
+                    UPDATE documents SET meeting_date = $1, updated_at = NOW()
+                    WHERE id = $2
+                """, meeting_date, existing['id'])
+            return existing['id']
+        
+        # Insert new document as discovered
+        doc_id = await conn.fetchval("""
+            INSERT INTO documents (
+                source_id, external_id, title, document_type, source_url,
+                meeting_date, content_status, discovered_at, raw_data
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+            RETURNING id
+        """, source_id, external_id, document.title, doc_type, source_url,
+             meeting_date, initial_status, 
+             getattr(document, 'raw_data', None))
+        
+        # Link to event if provided
+        if event_id and doc_id:
+            relationship = doc_type or 'related'
+            await conn.execute("""
+                INSERT INTO event_documents (event_id, document_id, relationship)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (event_id, document_id) DO UPDATE SET relationship = $3
+            """, event_id, doc_id, relationship)
+        
+        return doc_id
 
         await self.db_pool.update_source_health(conn, source_id, success=True)
         logger.info(f"Completed storing results for {source.name}: {len(events)} events, {len(documents)} documents")
@@ -163,33 +251,6 @@ class ScraperExecutor:
             logger.warning(f"AI enrichment failed for '{event.title}': {e}")
 
         return event
-
-    async def _download_document(self, conn, document: Document, doc_id: int, source_name: str) -> None:
-        """Download a document and update the database."""
-        if not self.document_downloader:
-            return
-
-        try:
-            result = await self.document_downloader.download(
-                url=document.original_url,
-                source_name=source_name,
-                document_id=doc_id,
-                title=document.title,
-            )
-
-            if result and result.get("local_path"):
-                await self.db_pool.update_document_local_path(
-                    conn,
-                    doc_id,
-                    local_path=result["local_path"],
-                    file_size_bytes=result.get("file_size"),
-                    mime_type=result.get("mime_type"),
-                    file_hash=result.get("file_hash"),
-                )
-                logger.debug(f"Downloaded document '{document.title}' -> {result['local_path']}")
-
-        except Exception as e:
-            logger.warning(f"Error downloading '{document.title}': {e}")
 
     async def link_documents_to_events(self, conn, documents: list[tuple[int, Document]]) -> None:
         """Use AI to link standalone documents to events."""

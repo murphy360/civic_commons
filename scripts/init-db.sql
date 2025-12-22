@@ -32,7 +32,8 @@ CREATE TYPE legislation_action AS ENUM (
     'amended',           -- Legislation was amended
     'tabled',            -- Postponed for future consideration
     'referred',          -- Referred to committee
-    'approved',          -- Passed/adopted
+    'approved',          -- Passed/adopted by council
+    'adopted',           -- Formally adopted (similar to approved)
     'failed',            -- Did not pass
     'vetoed',            -- Vetoed by executive
     'withdrawn',         -- Withdrawn by sponsor
@@ -156,6 +157,19 @@ CREATE INDEX IF NOT EXISTS event_sources_external_id_idx ON event_sources(source
 -- =============================================================================
 -- Documents
 -- =============================================================================
+-- Content lifecycle statuses:
+--   discovered        - Found by scraper, metadata only (visible as placeholder)
+--   download_pending  - Queued for download
+--   downloading       - Currently downloading
+--   downloaded        - File saved locally
+--   extraction_pending - Queued for text extraction
+--   extracting        - Currently extracting text
+--   extracted         - Text available
+--   ai_pending        - Queued for AI summary
+--   ai_processing     - AI generating summary
+--   complete          - Fully processed
+--   failed            - Processing failed
+--   skipped           - Non-processable content
 CREATE TABLE IF NOT EXISTS documents (
     id SERIAL PRIMARY KEY,
     source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -175,7 +189,23 @@ CREATE TABLE IF NOT EXISTS documents (
     ai_model_used VARCHAR(64),         -- AI model used to generate the summary
     published_date TIMESTAMP,          -- When the document was published/uploaded
     meeting_date TIMESTAMP,            -- Date of the meeting this document is for (for linking)
-    -- Linking status tracking
+    
+    -- Unified content lifecycle tracking
+    content_status VARCHAR(32) DEFAULT 'discovered',  -- See statuses above
+    error_message TEXT,                -- Last error if failed
+    retry_count INTEGER DEFAULT 0,     -- Number of retry attempts
+    retry_after TIMESTAMP,             -- When to retry (exponential backoff)
+    
+    -- Processing timestamps (for metrics and debugging)
+    discovered_at TIMESTAMP,           -- When scraper first found this
+    download_started_at TIMESTAMP,     -- When download began
+    download_completed_at TIMESTAMP,   -- When download finished
+    extraction_started_at TIMESTAMP,   -- When text extraction began
+    extraction_completed_at TIMESTAMP, -- When text extraction finished
+    ai_started_at TIMESTAMP,           -- When AI processing began
+    ai_completed_at TIMESTAMP,         -- When AI processing finished
+    
+    -- Linking status tracking (for event association)
     linking_status VARCHAR(32),        -- NULL=new, 'pending', 'pending_retry', 'linked', 'blocked'
     linking_attempts INTEGER DEFAULT 0, -- Number of linking attempts
     linking_retry_after TIMESTAMP,     -- When to retry linking
@@ -204,6 +234,16 @@ CREATE INDEX IF NOT EXISTS documents_external_id_idx ON documents(source_id, ext
 CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS documents_linking_status_idx ON documents(linking_status);
 CREATE INDEX IF NOT EXISTS documents_summary_priority_idx ON documents(summary_priority DESC NULLS LAST);
+-- Content lifecycle queue indexes (for efficient queue retrieval)
+CREATE INDEX IF NOT EXISTS documents_content_status_idx ON documents(content_status);
+CREATE INDEX IF NOT EXISTS documents_content_status_date_idx ON documents(content_status, meeting_date DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS documents_retry_after_idx ON documents(retry_after) WHERE retry_after IS NOT NULL;
+CREATE INDEX IF NOT EXISTS documents_download_queue_idx ON documents(content_status, meeting_date DESC NULLS LAST) 
+    WHERE content_status IN ('discovered', 'download_pending');
+CREATE INDEX IF NOT EXISTS documents_extraction_queue_idx ON documents(content_status, meeting_date DESC NULLS LAST) 
+    WHERE content_status IN ('downloaded', 'extraction_pending');
+CREATE INDEX IF NOT EXISTS documents_ai_queue_idx ON documents(content_status, meeting_date DESC NULLS LAST) 
+    WHERE content_status IN ('extracted', 'ai_pending');
 -- Legislation-specific indexes
 CREATE INDEX IF NOT EXISTS documents_legislation_number_idx ON documents(legislation_number) WHERE document_type IN ('ordinance', 'resolution');
 CREATE INDEX IF NOT EXISTS documents_legislation_year_idx ON documents(legislation_year) WHERE document_type IN ('ordinance', 'resolution');

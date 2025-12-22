@@ -30,6 +30,8 @@ from pipeline.downloader import DocumentDownloader
 from pipeline.document_linker import DocumentLinker
 from pipeline.ai_queue import AIQueueProcessor
 from pipeline.scraper import ScraperExecutor
+from pipeline.queue_manager import QueueManager
+from pipeline.queue_processor import QueueProcessor
 
 # Configure logging
 logging.basicConfig(
@@ -71,6 +73,8 @@ class Worker:
         self.document_linker: Optional[DocumentLinker] = None
         self.ai_queue: Optional[AIQueueProcessor] = None
         self.scraper: Optional[ScraperExecutor] = None
+        self.queue_manager: Optional[QueueManager] = None
+        self.queue_processor: Optional[QueueProcessor] = None
         self._shutdown_event = asyncio.Event()
         self._configs: list = []
 
@@ -98,17 +102,34 @@ class Worker:
         # Initialize document linker
         self.document_linker = DocumentLinker(self.db_pool, self.ai_processor)
 
+        # Initialize unified queue manager
+        self.queue_manager = QueueManager(self.db_pool)
+        logger.info("Queue manager initialized")
+
         # Initialize AI queue processor (callback added later after cascade_manager is created)
         self.ai_queue = AIQueueProcessor(
             self.db_pool, self.doc_summarizer, self.ai_processor,
             self.document_linker, self.settings,
+            queue_manager=self.queue_manager,
             on_document_processed=None  # Set after cascade_manager is initialized
         )
 
-        # Initialize scraper executor
+        # Initialize scraper executor (now uses queue_manager)
         self.scraper = ScraperExecutor(
-            self.db_pool, self.ai_processor, self.document_downloader
+            self.db_pool, self.ai_processor, self.document_downloader, 
+            queue_manager=self.queue_manager
         )
+
+        # Initialize unified queue processor
+        self.queue_processor = QueueProcessor(
+            db_pool=self.db_pool,
+            queue_manager=self.queue_manager,
+            document_downloader=self.document_downloader,
+            doc_summarizer=self.doc_summarizer,
+            ai_processor=self.ai_processor,
+            settings=self.settings,
+        )
+        logger.info("Queue processor initialized")
 
         # Initialize backfill manager
         backfill_months = int(os.getenv("BACKFILL_MONTHS", "12"))
@@ -186,6 +207,36 @@ class Worker:
             )
             logger.info(f"Scheduled AI analysis queue (every {interval}s)")
 
+        # Schedule download queue processing (every 30 seconds)
+        self.scheduler.add_job(
+            self.process_download_queue,
+            trigger=CronTrigger(second="*/30"),
+            id="download_queue",
+            name="Process Download Queue",
+            replace_existing=True,
+        )
+        logger.info("Scheduled download queue (every 30s)")
+
+        # Schedule extraction queue processing (every 30 seconds)
+        self.scheduler.add_job(
+            self.process_extraction_queue,
+            trigger=CronTrigger(second="*/30"),
+            id="extraction_queue",
+            name="Process Extraction Queue",
+            replace_existing=True,
+        )
+        logger.info("Scheduled extraction queue (every 30s)")
+
+        # Schedule queue maintenance (every 5 minutes)
+        self.scheduler.add_job(
+            self.process_queue_maintenance,
+            trigger=CronTrigger(minute="*/5"),
+            id="queue_maintenance",
+            name="Queue Maintenance",
+            replace_existing=True,
+        )
+        logger.info("Scheduled queue maintenance (every 5 min)")
+
         # Schedule manual trigger checker
         self.scheduler.add_job(
             self.process_manual_triggers,
@@ -222,6 +273,23 @@ class Worker:
     async def process_ai_analysis_queue(self) -> None:
         """Process the AI analysis queue."""
         await self.ai_queue.process_queue()
+
+    async def process_download_queue(self) -> None:
+        """Process the download queue."""
+        if self.queue_processor:
+            await self.queue_processor.process_downloads()
+
+    async def process_extraction_queue(self) -> None:
+        """Process the extraction queue."""
+        if self.queue_processor:
+            await self.queue_processor.process_extractions()
+
+    async def process_queue_maintenance(self) -> None:
+        """Run queue maintenance tasks."""
+        if self.queue_processor:
+            stats = await self.queue_processor.run_maintenance()
+            if stats.get("stuck_reset", 0) > 0 or stats.get("failed_retried", 0) > 0:
+                logger.info(f"Queue maintenance: reset {stats['stuck_reset']} stuck, retried {stats['failed_retried']} failed")
 
     async def is_ai_queue_busy(self) -> bool:
         """Check if AI queue has pending work."""
