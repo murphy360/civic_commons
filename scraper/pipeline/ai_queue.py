@@ -354,10 +354,10 @@ class AIQueueProcessor:
                 local_path=doc["local_path"],
             )
 
-            if not legislation_list:
-                return
-
-            logger.info(f"Extracted {len(legislation_list)} legislation mentions from '{doc['title']}'")
+            # legislation_list will be [] on parse failure, [] if no legislation found
+            # Only log if we have actual results
+            if legislation_list:
+                logger.info(f"Extracted {len(legislation_list)} legislation mentions from '{doc['title']}'")
 
             event_id = await conn.fetchval("""
                 SELECT event_id FROM event_documents WHERE document_id = $1 LIMIT 1

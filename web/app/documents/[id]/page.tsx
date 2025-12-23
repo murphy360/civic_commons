@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { notFound } from 'next/navigation';
 import { Header } from '../../components/Header';
+import { ReanalyzeButton } from '../ReanalyzeButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +78,67 @@ async function getRelatedEvents(documentId: number): Promise<RelatedEvent[]> {
     return events;
   } catch (error) {
     console.error('Failed to fetch related events:', error);
+    return [];
+  }
+}
+
+interface LegislationMentionEvent {
+  id: number;
+  title: string;
+  start_time: Date;
+  legislation_number: string;
+  action_taken: string;
+  vote_result: string | null;
+}
+
+async function getLegislationMentionEvents(documentId: number, documentTitle: string): Promise<LegislationMentionEvent[]> {
+  try {
+    // For ordinance/resolution documents, find events where this legislation was mentioned
+    // Use the legislation_mentions table, but also account for year format variations
+    // (e.g., "115-25" vs "115-2025")
+    
+    const doc = await sql<{legislation_number: string | null}[]>`
+      SELECT legislation_number FROM documents WHERE id = ${documentId}
+    `;
+    
+    if (!doc || !doc[0]?.legislation_number) {
+      return [];
+    }
+    
+    const legislationNumber = doc[0].legislation_number;
+    
+    // Build list of patterns to match (handle 2-digit and 4-digit year formats)
+    const patterns: string[] = [legislationNumber];
+    
+    const match = legislationNumber.match(/^(\d+)-(\d+)$/);
+    if (match) {
+      const [, baseNum, year] = match;
+      if (year.length === 2) {
+        // If we have "115-25", also search for "115-2025"
+        patterns.push(`${baseNum}-20${year}`);
+      } else if (year.length === 4 && year.startsWith('20')) {
+        // If we have "115-2025", also search for "115-25"
+        patterns.push(`${baseNum}-${year.substring(2)}`);
+      }
+    }
+    
+    // Query: find events with legislation mentions matching any of our patterns
+    const events = await sql<LegislationMentionEvent[]>`
+      SELECT DISTINCT
+        e.id,
+        e.title,
+        e.start_time,
+        lm.legislation_number,
+        lm.action_taken,
+        lm.vote_result
+      FROM events e
+      JOIN legislation_mentions lm ON e.id = lm.event_id
+      WHERE lm.legislation_number = ANY(${patterns})
+      ORDER BY e.start_time DESC
+    `;
+    return events;
+  } catch (error) {
+    console.error('Failed to fetch legislation mention events:', error);
     return [];
   }
 }
@@ -194,7 +256,12 @@ export default async function DocumentPage({
     notFound();
   }
 
-  const relatedEvents = await getRelatedEvents(documentId);
+  const [relatedEvents, legislationMentionEvents] = await Promise.all([
+    getRelatedEvents(documentId),
+    document.document_type === 'ordinance' || document.document_type === 'resolution' 
+      ? getLegislationMentionEvents(documentId, document.title)
+      : Promise.resolve([]),
+  ]);
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -298,6 +365,12 @@ export default async function DocumentPage({
           )}
         </div>
 
+        {/* Re-analyze Tool */}
+        <div className="mb-8">
+          <h3 className="text-sm font-medium text-gray-700 mb-3">Admin Tools</h3>
+          <ReanalyzeButton documentId={documentId} />
+        </div>
+
         {/* AI Summary */}
         {document.ai_summary && (
           <div className="mb-8">
@@ -337,6 +410,54 @@ export default async function DocumentPage({
                       <span className="text-sm text-muted-foreground">
                         {getRelationshipLabel(event.relationship)}
                       </span>
+                      <h3 className="font-medium">{event.title}</h3>
+                    </div>
+                    <span className="text-sm text-muted-foreground">
+                      {formatDate(event.start_time)}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Legislation Mention Events - Show for ordinances and resolutions */}
+        {legislationMentionEvents.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold mb-4">Mentioned in Events</h2>
+            <div className="space-y-3">
+              {legislationMentionEvents.map((event) => (
+                <Link
+                  key={event.id}
+                  href={`/events/${event.id}`}
+                  className="block p-4 border rounded-lg hover:bg-accent/50 transition-colors"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        {event.legislation_number && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+                            #{event.legislation_number}
+                          </span>
+                        )}
+                        {event.action_taken && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 capitalize">
+                            {event.action_taken}
+                          </span>
+                        )}
+                        {event.vote_result && (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                            event.vote_result === 'passed' 
+                              ? 'bg-green-100 text-green-800' 
+                              : event.vote_result === 'failed'
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-gray-100 text-gray-800'
+                          }`}>
+                            {event.vote_result === 'passed' ? '✓' : event.vote_result === 'failed' ? '✗' : '•'} {event.vote_result}
+                          </span>
+                        )}
+                      </div>
                       <h3 className="font-medium">{event.title}</h3>
                     </div>
                     <span className="text-sm text-muted-foreground">

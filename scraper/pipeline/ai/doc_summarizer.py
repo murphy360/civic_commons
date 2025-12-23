@@ -28,7 +28,7 @@ class SummaryResult:
     def model_name(self) -> str:
         """Get the full model name from the URL."""
         url = MODELS.get(self.model, "")
-        # Extract model name from URL like ".../gemini-2.0-flash:generateContent"
+        # Extract model name from URL like ".../gemini-2.5-flash:generateContent"
         if "/models/" in url:
             return url.split("/models/")[1].split(":")[0]
         return self.model
@@ -75,7 +75,8 @@ FORMAT EXAMPLE:
 • Resolution 2025-18: Approve $85K contract for Elm Ave sidewalks
 • Public Hearing: Proposed dog park at Memorial Field"
 
-Keep under 200 words. Be specific with numbers, addresses, amounts."""
+IMPORTANT LENGTH REQUIREMENT: Generate 300-600 words minimum. This is the PRIMARY SUMMARY for the document and will be read by many people. Do NOT be overly brief.
+Be specific with numbers, addresses, amounts. Include all significant items."""
 
 
 # System prompt for general documents (flyers, guides, forms)
@@ -87,7 +88,7 @@ EXTRACT:
 - Dollar amounts, fees, costs if mentioned
 - Who is affected and how
 
-NO fluff. Get to the point. Under 150 words."""
+Generate 200-400 words. Be specific. Do NOT be overly brief. This is the primary summary for the document and will be read by the public."""
 
 
 # System prompt for meeting video recordings
@@ -356,79 +357,104 @@ CONTENT:
 {content}
 
 ---
-Extract ALL LEGISLATION MENTIONS from this document. For each one, provide:
+Extract ALL LEGISLATION MENTIONS from this document. For each one, format as a single line:
 
-1. TYPE: ordinance | resolution | motion | bylaw | proclamation
-2. NUMBER: The legislation identifier (e.g., "2025-139", "R-2025-12")
-3. TITLE: Full name/title if available
-4. ACTION: What happened to it - introduced | first_reading | second_reading | third_reading | public_hearing | amended | tabled | referred | approved | failed | vetoed | withdrawn | discussed
-5. VOTE_RESULT: If voted on - passed | failed | tabled | unanimous (leave blank if not voted)
-6. VOTE_DETAILS: If voted, the breakdown like "5 yes, 2 no, 1 abstain" (leave blank if not voted)
-7. EXCERPT: The relevant sentence/paragraph from the document mentioning this
+TYPE|NUMBER|TITLE|ACTION|VOTE_RESULT|VOTE_DETAILS|EXCERPT
 
-Format as JSON array. If no legislation found, return empty array [].
+IMPORTANT FORMATTING RULES:
+- TYPE: Must be ONE of: ordinance, resolution, motion, bylaw, proclamation (lowercase)
+- NUMBER: The legislation identifier only (e.g., "2025-139", "R-2025-12", "118-25")
+- TITLE: Full name/title if available (or "N/A")
+- ACTION: Must be EXACTLY ONE of (lowercase): introduced, first_reading, second_reading, third_reading, public_hearing, amended, tabled, referred, approved, adopted, failed, vetoed, withdrawn, discussed
+  * CRITICAL: Choose the PRIMARY action. If multiple actions occurred, pick the most recent/final one.
+  * Do NOT use comma-separated values or multiple actions
+- VOTE_RESULT: One of: passed, failed, tabled, unanimous (or empty if not voted). Do NOT use vote details here.
+- VOTE_DETAILS: Plain text like "5 yes, 2 no, 1 abstain" (or empty if not voted). Do NOT use JSON.
+- EXCERPT: The relevant sentence (escape pipes with \\|)
 
-Example:
-```json
-[
-  {{
-    "type": "ordinance",
-    "number": "2025-139",
-    "title": "3% Water Rate Increase",
-    "action": "approved",
-    "vote_result": "passed",
-    "vote_details": "5 yes, 0 no, 0 abstain",
-    "excerpt": "Ordinance 2025-139 establishing a 3% water rate increase effective January 1, 2026 was approved unanimously."
-  }},
-  {{
-    "type": "resolution",
-    "number": "2025-18",
-    "title": "Approve $85K Elm Ave Sidewalk Contract",
-    "action": "first_reading",
-    "vote_result": null,
-    "vote_details": null,
-    "excerpt": "Resolution 2025-18 was introduced for approval of the $85,000 contract for Elm Avenue sidewalk repairs."
-  }}
-]
-```
+Return each legislation as ONE line only. If no legislation found, return NONE
 
-RETURN ONLY THE JSON ARRAY, no other text."""
+Examples:
+ordinance|2025-139|3% Water Rate Increase|approved|passed|5 yes, 0 no, 0 abstain|Ordinance 2025-139 establishing a 3% water rate increase was approved unanimously.
+resolution|2025-18|Approve Contract|introduced|||Resolution 2025-18 was introduced for approval.
+ordinance|118-25|Amend Clothing Allowance|approved|passed|6 yes, 1 no|Ordinance 118-25 regarding council clothing allowance was approved.
+motion|M-2025-5|Approve Minutes|approved|||The motion to approve minutes was approved by unanimous consent.
+"""
 
-        system_prompt = """You are extracting legislation mentions from government meeting documents.
-Return valid JSON only. No explanations, no markdown formatting."""
+        system_prompt = """You are extracting legislation mentions from government documents.
+Return one legislation per line in this format: TYPE|NUMBER|TITLE|ACTION|VOTE_RESULT|VOTE_DETAILS|EXCERPT
+Use \\| to escape pipes within excerpt text.
+Return NONE if no legislation found.
+No explanations, no other text."""
 
         response = await self._client.generate(prompt, system_prompt)
         
         if not response:
-            return None
+            return []
+        
+        legislation_list = []
+        # Valid enum values for action
+        valid_actions = {
+            "introduced", "first_reading", "second_reading", "third_reading",
+            "public_hearing", "amended", "tabled", "referred", "approved",
+            "adopted", "failed", "vetoed", "withdrawn", "discussed"
+        }
         
         try:
-            # Parse JSON response
-            response_text = response.strip()
+            lines = response.strip().split("\n")
+            for line in lines:
+                line = line.strip()
+                if not line or line == "NONE" or line.startswith("No legislation"):
+                    continue
+                
+                try:
+                    # Parse pipe-delimited format
+                    parts = [p.strip() for p in line.split("|")]
+                    if len(parts) < 2:
+                        continue
+                    
+                    # Unescape pipes in excerpt
+                    if len(parts) >= 7:
+                        parts[6] = parts[6].replace("\\|", "|")
+                    
+                    # Sanitize action: if it contains comma or slash, take first valid part
+                    raw_action = (parts[3] if len(parts) > 3 else "discussed").lower().strip()
+                    # Extract first valid action from comma or slash-separated values
+                    action = "discussed"
+                    for candidate in raw_action.replace("/", ",").split(","):
+                        candidate = candidate.strip()
+                        if candidate in valid_actions:
+                            action = candidate
+                            break
+                    
+                    legis = {
+                        "type": parts[0].lower() if len(parts) > 0 else "motion",
+                        "number": parts[1] if len(parts) > 1 else "",
+                        "title": parts[2] if len(parts) > 2 and parts[2] != "N/A" else None,
+                        "action": action,
+                        "vote_result": parts[4] if len(parts) > 4 and parts[4] else None,
+                        "vote_details": parts[5] if len(parts) > 5 and parts[5] else None,
+                        "excerpt": parts[6] if len(parts) > 6 else None,
+                    }
+                    
+                    # Validate required fields
+                    if legis["type"] and legis["number"]:
+                        legislation_list.append(legis)
+                except Exception as parse_error:
+                    logger.debug(f"Failed to parse legislation line '{line}': {parse_error}")
+                    continue
             
-            # Remove markdown code blocks if present
-            if response_text.startswith("```"):
-                parts = response_text.split("```")
-                if len(parts) >= 2:
-                    response_text = parts[1]
-                    if response_text.startswith("json"):
-                        response_text = response_text[4:].lstrip()
-            
-            legislation_list = json.loads(response_text)
-            
-            if not isinstance(legislation_list, list):
-                logger.warning(f"Legislation extraction returned non-list: {type(legislation_list)}")
-                return None
-            
-            logger.info(
-                f"Extracted {len(legislation_list)} legislation mentions from '{title}'"
-            )
+            if legislation_list:
+                logger.info(
+                    f"Extracted {len(legislation_list)} legislation mentions from '{title}'"
+                )
             return legislation_list
         
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse legislation JSON from '{title}': {e}")
-            logger.debug(f"Raw response: {response[:200]}")
-            return None
+        except Exception as e:
+            logger.warning(f"Legislation extraction error for '{title}': {e}")
+            logger.debug(f"Raw response (first 500 chars): {response[:500]}")
+            return []
+
 
     def _clean_response(self, response: str) -> str:
         """Clean up the AI response."""

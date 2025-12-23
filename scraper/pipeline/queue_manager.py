@@ -21,6 +21,7 @@ Priority is always: most recent date first (including future dates)
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -357,16 +358,27 @@ class QueueManager:
         model_used: str,
     ) -> None:
         """Mark document as fully processed."""
+        # For ordinance/resolution documents, extract legislation number from title if not already set
+        doc = await conn.fetchrow("SELECT document_type, title, legislation_number FROM documents WHERE id = $1", doc_id)
+        legislation_number = doc['legislation_number']
+        
+        if not legislation_number and doc['document_type'] in ('ordinance', 'resolution'):
+            # Try to extract legislation number from title (e.g., "01-25" from "01-25: Twinsburg TIF Ordinance...")
+            match = re.match(r'^(\d+-\d{2,4})', doc['title'].strip())
+            if match:
+                legislation_number = match.group(1)
+        
         await conn.execute("""
             UPDATE documents SET 
                 content_status = $1,
                 ai_summary = $2,
                 ai_model_used = $3,
+                legislation_number = $4,
                 ai_summary_updated_at = NOW(),
                 ai_completed_at = NOW(),
                 updated_at = NOW()
-            WHERE id = $4
-        """, ContentStatus.COMPLETE.value, ai_summary, model_used, doc_id)
+            WHERE id = $5
+        """, ContentStatus.COMPLETE.value, ai_summary, model_used, legislation_number, doc_id)
     
     async def mark_failed(
         self,

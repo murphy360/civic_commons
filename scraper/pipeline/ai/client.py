@@ -5,7 +5,7 @@ This module provides a reusable HTTP client for calling Google's Gemini API.
 It handles authentication, request formatting, and response parsing.
 
 Model Usage:
-- gemini-2.0-flash: Document summaries, event summaries (fast, cost-effective)
+- gemini-2.5-flash: Document summaries, event summaries (fast, cost-effective, improved reasoning)
 - gemini-2.5-flash: Video analysis, weekly/monthly summaries (balanced)
 - gemini-2.5-pro: Complex reasoning, quarterly/annual summaries (deep thinking)
 """
@@ -25,7 +25,7 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # Model endpoints
 MODELS = {
     # Fast model for basic document/event summaries
-    "flash": f"{GEMINI_API_BASE}/gemini-2.0-flash:generateContent",
+    "flash": f"{GEMINI_API_BASE}/gemini-2.5-flash:generateContent",
     
     # Balanced model for video analysis and weekly/monthly summaries  
     "flash-2.5": f"{GEMINI_API_BASE}/gemini-2.5-flash:generateContent",
@@ -85,7 +85,7 @@ class GeminiClient:
         prompt: str, 
         system_prompt: Optional[str] = None,
         temperature: float = 0.1,
-        max_tokens: int = 1024,
+        max_tokens: Optional[int] = None,
         model: str = "flash",
     ) -> Optional[str]:
         """
@@ -95,7 +95,7 @@ class GeminiClient:
             prompt: The user prompt to send
             system_prompt: Optional system instructions
             temperature: Sampling temperature (0.0-1.0, lower = more deterministic)
-            max_tokens: Maximum tokens in response
+            max_tokens: Maximum tokens in response (None = use model default)
             model: Model to use - "flash" (2.0), "flash-2.5", or "pro" (2.5)
         
         Returns:
@@ -128,16 +128,18 @@ class GeminiClient:
             "parts": [{"text": prompt}]
         })
         
+        # Build generation config - only include maxOutputTokens if explicitly set
+        generation_config = {"temperature": temperature}
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
+        
         try:
             logger.debug(f"Using model: {model} -> {model_url}")
             response = await client.post(
                 f"{model_url}?key={self.api_key}",
                 json={
                     "contents": contents,
-                    "generationConfig": {
-                        "temperature": temperature,
-                        "maxOutputTokens": max_tokens,
-                    }
+                    "generationConfig": generation_config
                 }
             )
             await client.aclose()
@@ -159,7 +161,7 @@ class GeminiClient:
         video_url: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.1,
-        max_tokens: int = 2048,
+        max_tokens: Optional[int] = None,
     ) -> Optional[str]:
         """
         Call Gemini API with a YouTube video URL for analysis.
@@ -171,7 +173,7 @@ class GeminiClient:
             video_url: YouTube video URL to analyze
             system_prompt: Optional system instructions
             temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            max_tokens: Maximum tokens in response (None = use model default)
         
         Returns:
             Generated text response or None on error
@@ -208,16 +210,18 @@ class GeminiClient:
             ]
         })
         
+        # Build generation config - only include maxOutputTokens if explicitly set
+        generation_config = {"temperature": temperature}
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
+        
         try:
             client = httpx.AsyncClient(timeout=120.0)  # Videos may take longer
             response = await client.post(
                 f"{model_url}?key={self.api_key}",
                 json={
                     "contents": contents,
-                    "generationConfig": {
-                        "temperature": temperature,
-                        "maxOutputTokens": max_tokens,
-                    }
+                    "generationConfig": generation_config
                 }
             )
             await client.aclose()
@@ -238,7 +242,7 @@ class GeminiClient:
         prompt: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.1,
-        max_tokens: int = 1024,
+        max_tokens: Optional[int] = None,
         model: str = "flash",
     ) -> Optional[dict]:
         """
@@ -251,7 +255,7 @@ class GeminiClient:
             prompt: The user prompt to send
             system_prompt: Optional system instructions (should request JSON output)
             temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            max_tokens: Maximum tokens in response (None = use model default)
             model: Model to use - "flash" (2.0), "flash-2.5", or "pro" (2.5)
             
         Returns:

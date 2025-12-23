@@ -22,6 +22,9 @@ interface Event {
   has_minutes: number;
   first_doc_id: number | null;
   has_ai_summary: boolean;
+  legislation_count: number;
+  ordinance_count: number;
+  resolution_count: number;
 }
 
 interface Summary {
@@ -370,6 +373,16 @@ function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }
             {event.has_minutes > 0 && (
               <span className="text-xs font-medium px-2 py-1 rounded-full bg-blue-100 text-blue-800">
                 Minutes
+              </span>
+            )}
+            {event.ordinance_count > 0 && (
+              <span className="text-xs font-medium px-2 py-1 rounded-full bg-orange-100 text-orange-800" title="Ordinances discussed">
+                📜 {event.ordinance_count} Ordinance{event.ordinance_count !== 1 ? 's' : ''}
+              </span>
+            )}
+            {event.resolution_count > 0 && (
+              <span className="text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-800" title="Resolutions discussed">
+                📋 {event.resolution_count} Resolution{event.resolution_count !== 1 ? 's' : ''}
               </span>
             )}
             {event.video_url && (

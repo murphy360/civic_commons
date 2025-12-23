@@ -21,6 +21,9 @@ interface Event {
   has_minutes: number;
   first_doc_id: number | null;
   has_ai_summary: boolean;
+  legislation_count: number;
+  ordinance_count: number;
+  resolution_count: number;
 }
 
 interface Summary {
@@ -60,7 +63,10 @@ async function getUpcomingEvents(): Promise<Event[]> {
         (SELECT COUNT(*) FROM event_documents ed WHERE ed.event_id = e.id AND ed.relationship = 'minutes')::int as has_minutes,
         (SELECT ed.document_id FROM event_documents ed WHERE ed.event_id = e.id ORDER BY 
           CASE ed.relationship WHEN 'agenda' THEN 1 WHEN 'minutes' THEN 2 ELSE 3 END LIMIT 1)::int as first_doc_id,
-        (e.ai_summary IS NOT NULL) as has_ai_summary
+        (e.ai_summary IS NOT NULL) as has_ai_summary,
+        (SELECT COUNT(DISTINCT lm.id) FROM legislation_mentions lm WHERE lm.event_id = e.id)::int as legislation_count,
+        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'ordinance')::int as ordinance_count,
+        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'resolution')::int as resolution_count
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id
@@ -126,7 +132,10 @@ async function getPastEvents(): Promise<PastEventsData> {
         (SELECT COUNT(*) FROM event_documents ed WHERE ed.event_id = e.id AND ed.relationship = 'minutes')::int as has_minutes,
         (SELECT ed.document_id FROM event_documents ed WHERE ed.event_id = e.id ORDER BY 
           CASE ed.relationship WHEN 'agenda' THEN 1 WHEN 'minutes' THEN 2 ELSE 3 END LIMIT 1)::int as first_doc_id,
-        (e.ai_summary IS NOT NULL) as has_ai_summary
+        (e.ai_summary IS NOT NULL) as has_ai_summary,
+        (SELECT COUNT(DISTINCT lm.id) FROM legislation_mentions lm WHERE lm.event_id = e.id)::int as legislation_count,
+        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'ordinance')::int as ordinance_count,
+        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'resolution')::int as resolution_count
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { sql } from '@/lib/db';
 import { AISummarySection } from './AISummarySection';
+import { ReanalyzeEventButton } from './ReanalyzeEventButton';
 import { Header } from '../../components/Header';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,20 @@ interface EventDocument {
   content_text: string | null;
   ai_summary: string | null;
   published_date: Date | null;
+}
+
+interface EventLegislation {
+  id: number;
+  legislation_number: string;
+  legislation_type: string;
+  legislation_title: string | null;
+  document_title: string;
+  action_taken: string;
+  vote_result: string | null;
+  excerpt: string | null;
+  mentioned_date: Date | null;
+  document_id: number;
+  ordinance_id: number | null;
 }
 
 async function getEvent(id: number): Promise<Event | null> {
@@ -89,6 +104,43 @@ async function getEventDocuments(eventId: number): Promise<EventDocument[]> {
     return documents;
   } catch (error) {
     console.error('Failed to fetch event documents:', error);
+    return [];
+  }
+}
+
+async function getEventLegislation(eventId: number): Promise<EventLegislation[]> {
+  try {
+    const legislation = await sql<EventLegislation[]>`
+      SELECT 
+        lm.id,
+        COALESCE(lm.legislation_number, '') as legislation_number,
+        lm.legislation_type,
+        lm.legislation_title,
+        d.title as document_title,
+        lm.action_taken,
+        lm.vote_result,
+        lm.excerpt,
+        lm.mentioned_date,
+        d.id as document_id,
+        (SELECT id FROM documents 
+         WHERE document_type IN ('ordinance', 'resolution')
+         AND legislation_number = lm.legislation_number
+         ORDER BY document_type DESC, published_date DESC
+         LIMIT 1) as ordinance_id
+      FROM legislation_mentions lm
+      JOIN documents d ON lm.document_id = d.id
+      WHERE lm.event_id = ${eventId}
+      ORDER BY 
+        CASE lm.legislation_type 
+          WHEN 'ordinance' THEN 1 
+          WHEN 'resolution' THEN 2
+          ELSE 3 
+        END,
+        lm.legislation_number DESC NULLS LAST
+    `;
+    return legislation;
+  } catch (error) {
+    console.error('Failed to fetch event legislation:', error);
     return [];
   }
 }
@@ -173,7 +225,10 @@ export default async function EventDetailPage({
     notFound();
   }
 
-  const documents = await getEventDocuments(eventId);
+  const [documents, legislation] = await Promise.all([
+    getEventDocuments(eventId),
+    getEventLegislation(eventId),
+  ]);
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -242,6 +297,12 @@ export default async function EventDetailPage({
             <p className="mt-6 text-lg">{event.description}</p>
           )}
 
+          {/* Admin Tools */}
+          <div className="mt-6 p-4 bg-slate-50 border rounded-lg">
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Admin Tools</h3>
+            <ReanalyzeEventButton eventId={event.id} />
+          </div>
+
           {/* AI Summary Section */}
           <AISummarySection 
             eventId={event.id}
@@ -280,16 +341,17 @@ export default async function EventDetailPage({
           </div>
         </div>
 
-        {/* Documents Section */}
-        {documents.length > 0 && (
+        {/* Documents & Legislation Section */}
+        {(documents.length > 0 || legislation.length > 0) && (
           <div className="mt-8">
-            <h2 className="text-2xl font-bold mb-4">Documents</h2>
+            <h2 className="text-2xl font-bold mb-4">Documents & Legislation</h2>
             <div className="grid gap-4">
+              {/* Documents */}
               {documents.map((doc) => {
                 const dateDiff = formatDateDiff(event.start_time, doc.published_date);
                 return (
                 <div
-                  key={doc.id}
+                  key={`doc-${doc.id}`}
                   className="border rounded-lg p-6"
                 >
                   <div className="flex items-start justify-between gap-4">
@@ -354,14 +416,68 @@ export default async function EventDetailPage({
                   </div>
                 </div>
               )})}
+
+              {/* Legislation */}
+              {legislation.map((leg) => (
+                <div
+                  key={`leg-${leg.id}`}
+                  className="border border-orange-200 rounded-lg p-6 bg-orange-50"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                          leg.legislation_type === 'ordinance' 
+                            ? 'bg-orange-100 text-orange-800' 
+                            : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {leg.legislation_type === 'ordinance' ? '📜 Ordinance' : '📋 Resolution'}
+                          {leg.legislation_number && ` - ${leg.legislation_number}`}
+                        </span>
+                        {leg.action_taken && (
+                          <span className="text-xs font-medium px-2 py-1 rounded-full bg-slate-100 text-slate-700">
+                            {leg.action_taken.charAt(0).toUpperCase() + leg.action_taken.slice(1)}
+                          </span>
+                        )}
+                        {leg.vote_result && (
+                          <span className="text-xs font-medium px-2 py-1 rounded-full bg-green-100 text-green-800">
+                            ✓ {leg.vote_result}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="text-lg font-semibold mb-2">
+                        {leg.legislation_title || leg.document_title}
+                      </h3>
+                      {leg.excerpt && (
+                        <p className="text-sm text-slate-700 italic mb-2 line-clamp-3">
+                          "{leg.excerpt}"
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {leg.ordinance_id ? (
+                          <>Mentioned in: <Link href={`/documents/${leg.document_id}`} className="font-medium text-primary hover:underline">{leg.document_title}</Link></>
+                        ) : (
+                          <>Discussed in: <Link href={`/documents/${leg.document_id}`} className="font-medium text-primary hover:underline">{leg.document_title}</Link></>
+                        )}
+                      </p>
+                    </div>
+                    <Link
+                      href={`/documents/${leg.ordinance_id || leg.document_id}`}
+                      className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md bg-orange-100 text-orange-800 hover:bg-orange-200 transition-colors flex-shrink-0"
+                    >
+                      {leg.ordinance_id ? 'View Ordinance' : 'View Details'}
+                    </Link>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {documents.length === 0 && (
+        {documents.length === 0 && legislation.length === 0 && (
           <div className="mt-8 p-8 border rounded-lg text-center">
             <p className="text-muted-foreground">
-              No documents have been associated with this event yet.
+              No documents or legislation have been associated with this event yet.
             </p>
           </div>
         )}
