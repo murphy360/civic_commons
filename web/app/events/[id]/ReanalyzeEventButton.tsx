@@ -32,9 +32,10 @@ export function ReanalyzeEventButton({ eventId }: ReanalyzeEventButtonProps) {
         return;
       }
 
+      const data = await response.json();
       setMessage({
         type: 'success',
-        text: 'Event queued for re-analysis. This may take a few minutes.',
+        text: data.message || 'Event queued for re-analysis. This may take a few minutes.',
       });
     } catch (error) {
       setMessage({

@@ -27,18 +27,38 @@ export async function POST(request: Request) {
     }
 
     // Clear AI summary to trigger re-analysis
+    // Set summary_priority to NOW() to prioritize manually queued items
     // The worker will regenerate the summary when it processes pending summaries
     await sql`
       UPDATE events 
       SET ai_summary = NULL,
-          ai_summary_updated_at = NULL
+          ai_summary_updated_at = NULL,
+          summary_priority = NOW()
       WHERE id = ${eventId}
+    `;
+
+    // Also prioritize all linked documents so they get processed first
+    // This ensures the event can be summarized once its documents are ready
+    // Note: We don't clear existing summaries - only prioritize pending ones
+    const docsUpdated = await sql`
+      UPDATE documents 
+      SET summary_priority = NOW(),
+          content_status = CASE 
+            WHEN ai_summary IS NULL AND content_status NOT IN ('ai_pending', 'extracting', 'downloading') 
+            THEN 'ai_pending' 
+            ELSE content_status 
+          END
+      FROM event_documents ed
+      WHERE documents.id = ed.document_id
+        AND ed.event_id = ${eventId}
+      RETURNING documents.id
     `;
 
     return NextResponse.json({
       success: true,
-      message: 'Event queued for re-analysis',
+      message: `Event and ${docsUpdated.length} linked documents queued for re-analysis`,
       eventId,
+      documentsQueued: docsUpdated.length,
     });
   } catch (error) {
     console.error('Failed to reanalyze event:', error);

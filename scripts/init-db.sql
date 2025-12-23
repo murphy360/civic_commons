@@ -124,11 +124,13 @@ CREATE TABLE IF NOT EXISTS events (
     ai_summary TEXT,                   -- AI-generated overview of the event
     ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
     ai_model_used VARCHAR(64),         -- AI model used to generate the summary
+    summary_priority TIMESTAMP,        -- Higher (more recent) values processed first in AI queue (set on manual reanalysis)
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS events_start_time_idx ON events(start_time);
+CREATE INDEX IF NOT EXISTS events_summary_priority_idx ON events(summary_priority DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS events_category_idx ON events(category);
 -- Trigram index for fuzzy title matching
 CREATE INDEX IF NOT EXISTS events_title_trgm_idx ON events USING GIN(title gin_trgm_ops);

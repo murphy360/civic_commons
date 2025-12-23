@@ -500,7 +500,8 @@ class QueueManager:
                     local_path,
                     source_url,
                     1 as priority_tier,
-                    COALESCE(retry_count, 0) as retry_count
+                    COALESCE(retry_count, 0) as retry_count,
+                    summary_priority
                 FROM documents
                 WHERE content_status IN ($1, $2)
                   AND content_markdown IS NOT NULL
@@ -522,7 +523,8 @@ class QueueManager:
                     NULL as local_path,
                     source_url,
                     1 as priority_tier,
-                    COALESCE(retry_count, 0) as retry_count
+                    COALESCE(retry_count, 0) as retry_count,
+                    summary_priority
                 FROM documents
                 WHERE content_status = $3
                   AND document_type = 'video'
@@ -544,7 +546,8 @@ class QueueManager:
                     NULL as local_path,
                     NULL as source_url,
                     2 as priority_tier,
-                    0 as retry_count
+                    0 as retry_count,
+                    e.summary_priority
                 FROM events e
                 WHERE (e.ai_summary IS NULL OR e.ai_summary = '')
                   AND COALESCE(e.start_time, e.created_at) >= NOW() - INTERVAL '1 day' * $4
@@ -580,7 +583,8 @@ class QueueManager:
                     NULL as local_path,
                     NULL as source_url,
                     3 as priority_tier,
-                    0 as retry_count
+                    0 as retry_count,
+                    NULL::timestamp as summary_priority
                 FROM summaries s
                 WHERE s.status IN ('pending', 'stale')
                   AND s.period_end >= NOW() - INTERVAL '1 day' * $4
@@ -609,6 +613,9 @@ class QueueManager:
                   )
             ) AS unified_queue
             ORDER BY 
+                -- HIGHEST PRIORITY: Manually queued items (summary_priority is set)
+                CASE WHEN summary_priority IS NOT NULL THEN 0 ELSE 1 END,
+                summary_priority DESC NULLS LAST,
                 -- Process by tier: documents/videos first, then events, then summaries
                 priority_tier,
                 -- Within tier: items with no retries first, then retry 1, then retry 2

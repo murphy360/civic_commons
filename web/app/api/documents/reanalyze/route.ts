@@ -27,11 +27,13 @@ export async function POST(request: Request) {
     }
 
     // Reset document to ai_pending status and clear AI summary to trigger re-analysis
+    // Set summary_priority to NOW() to prioritize manually queued items
     await sql`
       UPDATE documents 
       SET content_status = 'ai_pending',
           ai_summary = NULL,
-          ai_summary_updated_at = NULL
+          ai_summary_updated_at = NULL,
+          summary_priority = NOW()
       WHERE id = ${documentId}
     `;
 

@@ -197,13 +197,13 @@ class GeminiClient:
             })
         
         # Include video URL and prompt together
+        # YouTube URLs use file_data with just the file_uri (no mimeType needed)
         contents.append({
             "role": "user",
             "parts": [
                 {
-                    "fileData": {
-                        "mimeType": "video/youtube",
-                        "fileUri": video_url
+                    "file_data": {
+                        "file_uri": video_url
                     }
                 },
                 {"text": prompt}
@@ -216,7 +216,9 @@ class GeminiClient:
             generation_config["maxOutputTokens"] = max_tokens
         
         try:
-            client = httpx.AsyncClient(timeout=120.0)  # Videos may take longer
+            # Long videos (council meetings can be 2+ hours) need much longer timeouts
+            # Gemini processes videos in the background before generating
+            client = httpx.AsyncClient(timeout=600.0)  # 10 minutes for long videos
             response = await client.post(
                 f"{model_url}?key={self.api_key}",
                 json={
@@ -228,13 +230,24 @@ class GeminiClient:
             response.raise_for_status()
             
             data = response.json()
+            
+            # Check for valid response structure
+            if "candidates" not in data or not data["candidates"]:
+                logger.error(f"Gemini API returned no candidates for video: {video_url}")
+                if "error" in data:
+                    logger.error(f"API error: {data['error']}")
+                return None
+            
             return data["candidates"][0]["content"]["parts"][0]["text"]
             
         except httpx.HTTPStatusError as e:
-            logger.error(f"Gemini API HTTP error (video): {e.response.status_code} - {e.response.text}")
+            logger.error(f"Gemini API HTTP error (video): {e.response.status_code} - {e.response.text[:500]}")
+            return None
+        except KeyError as e:
+            logger.error(f"Gemini API unexpected response structure (video): missing key {e}")
             return None
         except Exception as e:
-            logger.error(f"Gemini API error (video): {e}")
+            logger.error(f"Gemini API error (video): {type(e).__name__}: {e}")
             return None
 
     async def generate_json(
