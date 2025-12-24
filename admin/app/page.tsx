@@ -1,9 +1,9 @@
 import { sql } from '@/lib/db';
 import Link from 'next/link';
-import SourceStatusTable from './components/SourceStatusTable';
 import NewsletterManager from './components/NewsletterManager';
 import AutoRefresh from './components/AutoRefresh';
 import { LocalTime } from './components/LocalTime';
+import Sidebar from './components/Sidebar';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,19 +14,6 @@ const AUTO_REFRESH_INTERVAL_SECONDS = parseInt(process.env.ADMIN_AUTO_REFRESH_SE
 const AI_QUEUE_INTERVAL_SECONDS = parseInt(process.env.AI_QUEUE_INTERVAL_SECONDS || '30', 10);
 const AI_QUEUE_BATCH_SIZE = parseInt(process.env.AI_QUEUE_BATCH_SIZE || '1', 10);
 const AI_SUMMARY_MAX_AGE_DAYS = parseInt(process.env.AI_SUMMARY_MAX_AGE_DAYS || '0', 10);
-
-interface SourceStatus {
-  id: number;
-  name: string;
-  city_id: string;
-  source_type: string;
-  is_enabled: boolean;
-  last_fetched_at: Date | null;
-  last_success_at: Date | null;
-  last_error: string | null;
-  consecutive_failures: number;
-  trigger_requested_at: Date | null;
-}
 
 interface ContentTypeStats {
   total: number;
@@ -243,24 +230,6 @@ async function getStats() {
   }
 }
 
-async function getSources(): Promise<SourceStatus[]> {
-  try {
-    return await sql<SourceStatus[]>`
-      SELECT 
-        id, name, city_id, source_type, is_enabled,
-        last_fetched_at, last_success_at, last_error, consecutive_failures,
-        trigger_requested_at
-      FROM sources
-      ORDER BY 
-        consecutive_failures DESC,
-        last_fetched_at DESC NULLS LAST
-    `;
-  } catch (error) {
-    console.error('Failed to fetch sources:', error);
-    return [];
-  }
-}
-
 async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
   try {
     // Get last 5 AI-processed items by ai_summary_updated_at (when AI actually processed them)
@@ -316,7 +285,6 @@ async function getRecentAIProcessed(): Promise<RecentAIProcessed[]> {
 
 export default async function AdminDashboard() {
   const stats = await getStats();
-  const sources = await getSources();
   const recentAIProcessed = await getRecentAIProcessed();
 
   // Calculate totals for content breakdown
@@ -342,45 +310,7 @@ export default async function AdminDashboard() {
   return (
     <AutoRefresh intervalSeconds={AUTO_REFRESH_INTERVAL_SECONDS}>
     <div className="flex min-h-screen">
-      {/* Sidebar */}
-      <aside className="w-64 border-r bg-card">
-        <div className="flex h-14 items-center border-b px-4">
-          <span className="font-bold text-lg">Civic Commons</span>
-        </div>
-        <nav className="p-4 space-y-2">
-          <Link href="/" className="flex items-center gap-3 rounded-lg bg-primary/10 px-3 py-2 text-primary">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-            </svg>
-            Dashboard
-          </Link>
-          <Link href="/sources" className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-            </svg>
-            Sources
-          </Link>
-          <Link href="/cities" className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-            </svg>
-            Cities
-          </Link>
-          <Link href="/logs" className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            Logs
-          </Link>
-          <Link href="/settings" className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Settings
-          </Link>
-        </nav>
-      </aside>
+      <Sidebar />
 
       {/* Main Content */}
       <main className="flex-1">
@@ -704,14 +634,6 @@ export default async function AdminDashboard() {
             {/* Newsletter Management */}
             <NewsletterManager />
           </div>
-
-          {/* Source Status Table */}
-          <SourceStatusTable initialSources={sources.map(s => ({
-            ...s,
-            last_fetched_at: s.last_fetched_at?.toISOString() ?? null,
-            last_success_at: s.last_success_at?.toISOString() ?? null,
-            trigger_requested_at: s.trigger_requested_at?.toISOString() ?? null,
-          }))} />
         </div>
       </main>
     </div>

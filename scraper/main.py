@@ -32,6 +32,7 @@ from pipeline.ai_queue import AIQueueProcessor
 from pipeline.scraper import ScraperExecutor
 from pipeline.queue_manager import QueueManager
 from pipeline.queue_processor import QueueProcessor
+from pipeline.activity_logger import ActivityLogger
 
 # Configure logging
 logging.basicConfig(
@@ -75,6 +76,7 @@ class Worker:
         self.scraper: Optional[ScraperExecutor] = None
         self.queue_manager: Optional[QueueManager] = None
         self.queue_processor: Optional[QueueProcessor] = None
+        self.activity_logger: Optional[ActivityLogger] = None
         self._shutdown_event = asyncio.Event()
         self._configs: list = []
 
@@ -82,6 +84,11 @@ class Worker:
         """Initialize database connection pool and processors."""
         logger.info("Initializing database connection pool...")
         self.db_pool = await DatabasePool.create(self.settings.get_database_url())
+
+        # Initialize activity logger
+        self.activity_logger = ActivityLogger(self.db_pool._pool)
+        await self.activity_logger.log_system_started()
+        logger.info("Activity logger initialized")
 
         # Initialize document downloader
         download_dir = os.getenv("DOCUMENT_STORAGE_DIR", "/data/documents")
@@ -111,13 +118,15 @@ class Worker:
             self.db_pool, self.doc_summarizer, self.ai_processor,
             self.document_linker, self.settings,
             queue_manager=self.queue_manager,
-            on_document_processed=None  # Set after cascade_manager is initialized
+            on_document_processed=None,  # Set after cascade_manager is initialized
+            activity_logger=self.activity_logger,
         )
 
         # Initialize scraper executor (now uses queue_manager)
         self.scraper = ScraperExecutor(
             self.db_pool, self.ai_processor, self.document_downloader, 
-            queue_manager=self.queue_manager
+            queue_manager=self.queue_manager,
+            activity_logger=self.activity_logger,
         )
 
         # Initialize unified queue processor
@@ -128,6 +137,7 @@ class Worker:
             doc_summarizer=self.doc_summarizer,
             ai_processor=self.ai_processor,
             settings=self.settings,
+            activity_logger=self.activity_logger,
         )
         logger.info("Queue processor initialized")
 

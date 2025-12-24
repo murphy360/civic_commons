@@ -670,6 +670,37 @@ LEFT JOIN sources s ON es.source_id = s.id
 GROUP BY e.id;
 
 -- =============================================================================
+-- Activity Log (for admin dashboard)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS activity_log (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    level VARCHAR(20) NOT NULL,           -- info, warning, error, success
+    category VARCHAR(50) NOT NULL,        -- download, extraction, ai, scrape, system, event, linking
+    action VARCHAR(100) NOT NULL,         -- started, completed, failed, queued, discovered, etc.
+    entity_type VARCHAR(50),              -- document, event, source, summary
+    entity_id INTEGER,
+    entity_title TEXT,
+    message TEXT,
+    details JSONB,                        -- additional context (error messages, file sizes, etc.)
+    source_name VARCHAR(255),
+    city_id VARCHAR(64)
+);
+
+CREATE INDEX IF NOT EXISTS activity_log_timestamp_idx ON activity_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS activity_log_level_idx ON activity_log(level);
+CREATE INDEX IF NOT EXISTS activity_log_category_idx ON activity_log(category);
+CREATE INDEX IF NOT EXISTS activity_log_entity_idx ON activity_log(entity_type, entity_id);
+
+-- Auto-cleanup old activity logs (keep 7 days by default)
+CREATE OR REPLACE FUNCTION cleanup_old_activity_logs()
+RETURNS void AS $$
+BEGIN
+    DELETE FROM activity_log WHERE timestamp < NOW() - INTERVAL '7 days';
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
 -- Done
 -- =============================================================================
 DO $$

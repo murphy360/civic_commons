@@ -49,7 +49,7 @@ export async function GET(request: Request) {
         COUNT(DISTINCT lm.id)::int as total_mentions
       FROM documents d
       LEFT JOIN legislation_mentions lm ON d.id = lm.document_id
-      ${sql.raw(whereClause)}
+      ${sql.unsafe(whereClause)}
       GROUP BY d.id
       ORDER BY d.proposed_date DESC NULLS LAST, d.published_date DESC NULLS LAST
       LIMIT ${limit} OFFSET ${offset}
@@ -60,7 +60,7 @@ export async function GET(request: Request) {
       SELECT COUNT(*) as total
       FROM documents d
       LEFT JOIN legislation_mentions lm ON d.id = lm.document_id
-      ${sql.raw(whereClause)}
+      ${sql.unsafe(whereClause)}
     `;
     const total = countResult[0]?.total || 0;
 
@@ -148,10 +148,10 @@ export async function POST(request: Request) {
 }
 
 /**
- * GET /api/legislation/:id/events
- * Returns available events for linking to a specific legislation document
+ * Helper function to get available events for linking to a specific legislation document
+ * NOTE: Not exported - Next.js route handlers only allow GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS exports
  */
-export async function getAvailableEvents(legislationId: number) {
+async function getAvailableEvents(legislationId: number) {
   try {
     const legislation = await sql`
       SELECT d.id, d.title, d.proposed_date, d.published_date, d.source_id

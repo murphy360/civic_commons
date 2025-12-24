@@ -6,7 +6,7 @@ Side effects: HTTP requests to YouTube
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import logging
 
@@ -202,6 +202,7 @@ class YouTubeChannelDriver(BaseDriver):
                 "description": description,
                 "url": video_url,
                 "published_text": published_text,
+                "published_date": self._parse_relative_date(published_text),
                 "view_count": view_count_text,
                 "length": length_text,
             }
@@ -209,6 +210,61 @@ class YouTubeChannelDriver(BaseDriver):
         except Exception as e:
             self.log_debug(f"Error extracting video info: {e}")
             return None
+
+    def _parse_relative_date(self, text: str) -> Optional[datetime]:
+        """
+        Parse relative date text like "2 weeks ago" to an actual datetime.
+        
+        Common patterns:
+        - "X seconds ago"
+        - "X minutes ago"
+        - "X hours ago"
+        - "X days ago"
+        - "X weeks ago"
+        - "X months ago"
+        - "X years ago"
+        - "Streamed X days ago"
+        """
+        if not text:
+            return None
+            
+        text_lower = text.lower().strip()
+        now = datetime.now()
+        
+        # Remove "Streamed " prefix if present
+        text_lower = text_lower.replace("streamed ", "")
+        
+        # Parse the relative time
+        patterns = [
+            (r'(\d+)\s*second', 'seconds'),
+            (r'(\d+)\s*minute', 'minutes'),
+            (r'(\d+)\s*hour', 'hours'),
+            (r'(\d+)\s*day', 'days'),
+            (r'(\d+)\s*week', 'weeks'),
+            (r'(\d+)\s*month', 'months'),
+            (r'(\d+)\s*year', 'years'),
+        ]
+        
+        for pattern, unit in patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                value = int(match.group(1))
+                if unit == 'seconds':
+                    return now - timedelta(seconds=value)
+                elif unit == 'minutes':
+                    return now - timedelta(minutes=value)
+                elif unit == 'hours':
+                    return now - timedelta(hours=value)
+                elif unit == 'days':
+                    return now - timedelta(days=value)
+                elif unit == 'weeks':
+                    return now - timedelta(weeks=value)
+                elif unit == 'months':
+                    return now - timedelta(days=value * 30)  # Approximate
+                elif unit == 'years':
+                    return now - timedelta(days=value * 365)  # Approximate
+        
+        return None
 
     def _create_video_document(self, video: dict) -> Optional[Document]:
         """Create a Document from video info."""
@@ -219,8 +275,17 @@ class YouTubeChannelDriver(BaseDriver):
             if not title or not url:
                 return None
             
-            # Try to extract date from title
+            # Try to extract date from title first
             meeting_date = self._extract_date_from_title(title)
+            
+            # Get published date from YouTube
+            published_date = video.get("published_date")
+            
+            # If no meeting date in title, use published date as meeting date
+            # This ensures videos without dates in titles can still be linked
+            if not meeting_date and published_date:
+                meeting_date = published_date
+                self.log_debug(f"Using published date as meeting date for: {title}")
             
             # Clean up title - remove " - YouTube" suffix if present
             clean_title = re.sub(r'\s*-\s*YouTube\s*$', '', title).strip()
@@ -234,6 +299,7 @@ class YouTubeChannelDriver(BaseDriver):
                 original_url=url,
                 doc_type=DocumentType.VIDEO,
                 meeting_date=meeting_date,
+                published_at=published_date,
             )
             
             return doc

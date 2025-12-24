@@ -11,7 +11,10 @@ in priority order (most recent dates first).
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pipeline.activity_logger import ActivityLogger
 
 logger = logging.getLogger("civic.queue_processor")
 
@@ -34,6 +37,7 @@ class QueueProcessor:
         doc_summarizer=None,
         ai_processor=None,
         settings=None,
+        activity_logger: Optional["ActivityLogger"] = None,
     ):
         self.db_pool = db_pool
         self.queue_manager = queue_manager
@@ -41,6 +45,7 @@ class QueueProcessor:
         self.doc_summarizer = doc_summarizer
         self.ai_processor = ai_processor
         self.settings = settings or {}
+        self.activity = activity_logger
         
         # Processing limits
         self.download_batch_size = int(os.getenv("DOWNLOAD_BATCH_SIZE", "5"))
@@ -100,6 +105,15 @@ class QueueProcessor:
         # Mark as downloading
         await self.queue_manager.mark_downloading(conn, doc_id)
         
+        # Log download started
+        if self.activity:
+            await self.activity.log_download_started(
+                doc_id, item['title'], 
+                source_name=item.get('source_name'),
+                city_id=item.get('city_id'),
+                url=item.get('source_url'),
+            )
+        
         try:
             result = await self.downloader.download(
                 url=item['source_url'],
@@ -117,6 +131,15 @@ class QueueProcessor:
                     file_hash=result.get('file_hash', ''),
                 )
                 logger.debug(f"Downloaded: {item['title']}")
+                
+                # Log download completed
+                if self.activity:
+                    await self.activity.log_download_completed(
+                        doc_id, item['title'],
+                        file_size=result.get('file_size'),
+                        source_name=item.get('source_name'),
+                        city_id=item.get('city_id'),
+                    )
             else:
                 # Non-downloadable URL (HTML page, etc.)
                 await self.queue_manager.mark_skipped(
@@ -128,6 +151,14 @@ class QueueProcessor:
             await self.queue_manager.mark_failed(
                 conn, doc_id, f"Download error: {str(e)[:200]}"
             )
+            
+            # Log download failed
+            if self.activity:
+                await self.activity.log_download_failed(
+                    doc_id, item['title'], str(e),
+                    source_name=item.get('source_name'),
+                    city_id=item.get('city_id'),
+                )
             raise
 
     # =========================================================================
@@ -179,6 +210,13 @@ class QueueProcessor:
         # Mark as extracting
         await self.queue_manager.mark_extracting(conn, doc_id)
         
+        # Log extraction started
+        if self.activity:
+            await self.activity.log_extraction_started(
+                doc_id, item['title'],
+                source_name=item.get('source_name'),
+            )
+        
         try:
             content_text = None
             content_markdown = None
@@ -204,6 +242,15 @@ class QueueProcessor:
                     conn, doc_id, content_text, content_markdown
                 )
                 logger.debug(f"Extracted: {item['title']}")
+                
+                # Log extraction completed
+                if self.activity:
+                    char_count = len(content_markdown or content_text or '')
+                    await self.activity.log_extraction_completed(
+                        doc_id, item['title'],
+                        char_count=char_count,
+                        source_name=item.get('source_name'),
+                    )
             else:
                 await self.queue_manager.mark_skipped(
                     conn, doc_id, "No text content extracted"
@@ -214,6 +261,13 @@ class QueueProcessor:
             await self.queue_manager.mark_failed(
                 conn, doc_id, f"Extraction error: {str(e)[:200]}"
             )
+            
+            # Log extraction failed
+            if self.activity:
+                await self.activity.log_extraction_failed(
+                    doc_id, item['title'], str(e),
+                    source_name=item.get('source_name'),
+                )
             raise
 
     async def _extract_pdf_content(self, local_path: str) -> tuple[Optional[str], Optional[str]]:

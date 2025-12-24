@@ -7,7 +7,10 @@ between different AI processing phases.
 
 import logging
 import os
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pipeline.activity_logger import ActivityLogger
 
 logger = logging.getLogger("civic.ai_queue")
 
@@ -20,7 +23,8 @@ class AIQueueProcessor:
 
     def __init__(self, db_pool, doc_summarizer, ai_processor, document_linker, settings,
                  queue_manager=None,
-                 on_document_processed: Optional[CascadeCallback] = None):
+                 on_document_processed: Optional[CascadeCallback] = None,
+                 activity_logger: Optional["ActivityLogger"] = None):
         self.db_pool = db_pool
         self.doc_summarizer = doc_summarizer
         self.ai_processor = ai_processor
@@ -28,6 +32,7 @@ class AIQueueProcessor:
         self.settings = settings
         self.queue_manager = queue_manager
         self._on_document_processed = on_document_processed
+        self.activity = activity_logger
 
     async def process_queue(self) -> None:
         """
@@ -171,6 +176,16 @@ class AIQueueProcessor:
         """Process a single document for AI summary."""
         MAX_AI_RETRIES = 3
         
+        # Log AI started
+        if self.activity:
+            source_name = await conn.fetchval("""
+                SELECT s.name FROM sources s WHERE s.id = $1
+            """, doc.get("source_id"))
+            await self.activity.log_ai_started(
+                "document", doc["id"], doc["title"],
+                source_name=source_name,
+            )
+        
         try:
             # Check current retry count
             current_retries = doc.get("retry_count", 0) or 0
@@ -215,6 +230,15 @@ class AIQueueProcessor:
                     model_used=result.model_name,
                 )
                 logger.info(f"AI summary generated for '{doc['title']}' using {result.model_name}")
+                
+                # Log AI completed
+                if self.activity:
+                    await self.activity.log_ai_completed(
+                        "document", doc["id"], doc["title"],
+                        summary_length=len(result.text_with_footer),
+                        model_used=result.model_name,
+                        source_name=source_name if 'source_name' in dir() else None,
+                    )
 
                 # Trigger cascade update if callback is set
                 if self._on_document_processed:
@@ -250,6 +274,13 @@ class AIQueueProcessor:
                     WHERE id = $1
                 """, doc["id"])
                 logger.warning(f"Marked document '{doc['title']}' as AI summary failed (no result)")
+                
+                # Log AI failed
+                if self.activity:
+                    await self.activity.log_ai_failed(
+                        "document", doc["id"], doc["title"],
+                        "AI summary generation returned no result",
+                    )
 
         except Exception as e:
             # Increment retry count
@@ -267,6 +298,13 @@ class AIQueueProcessor:
                     WHERE id = $1
                 """, doc["id"], new_retry_count, f"AI failed after {MAX_AI_RETRIES} attempts: {error_msg}")
                 logger.error(f"AI analysis permanently failed for '{doc['title']}' after {MAX_AI_RETRIES} attempts: {e}")
+                
+                # Log AI failed (permanent)
+                if self.activity:
+                    await self.activity.log_ai_failed(
+                        "document", doc["id"], doc["title"],
+                        f"Failed after {MAX_AI_RETRIES} attempts: {error_msg}",
+                    )
             else:
                 # Increment retry count but keep in queue
                 await conn.execute("""

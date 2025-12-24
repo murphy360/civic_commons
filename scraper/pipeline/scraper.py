@@ -8,7 +8,10 @@ then processed asynchronously through the queue system.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pipeline.activity_logger import ActivityLogger
 
 from models import Document, Event
 from .queue_manager import QueueManager, ContentStatus
@@ -19,11 +22,14 @@ logger = logging.getLogger("civic.scraper")
 class ScraperExecutor:
     """Executes scraping jobs and stores results."""
 
-    def __init__(self, db_pool, ai_processor=None, document_downloader=None, queue_manager: QueueManager = None):
+    def __init__(self, db_pool, ai_processor=None, document_downloader=None, 
+                 queue_manager: QueueManager = None,
+                 activity_logger: Optional["ActivityLogger"] = None):
         self.db_pool = db_pool
         self.ai_processor = ai_processor
         self.document_downloader = document_downloader
         self.queue_manager = queue_manager
+        self.activity = activity_logger
 
     async def scrape_source(
         self,
@@ -77,6 +83,20 @@ class ScraperExecutor:
                 params_override=driver_params,
             )
 
+            # Log scrape started
+            source_id = None
+            if self.db_pool:
+                async with self.db_pool.acquire() as conn:
+                    source_id = await conn.fetchval("""
+                        SELECT id FROM sources WHERE name = $1 AND city_id = $2 LIMIT 1
+                    """, source.name, config.city_profile.name.lower().replace(" ", "_").replace(",", ""))
+            
+            if self.activity and source_id:
+                await self.activity.log_scrape_started(
+                    source_id, source.name,
+                    city_id=config.city_profile.name.lower().replace(" ", "_").replace(",", ""),
+                )
+
             events, documents = await driver.fetch()
 
             if self.db_pool:
@@ -93,10 +113,27 @@ class ScraperExecutor:
                     )
 
             logger.info(f"Completed scrape: {source.name} - {len(events)} events, {len(documents)} documents")
+            
+            # Log scrape completed
+            if self.activity and source_id:
+                await self.activity.log_scrape_completed(
+                    source_id, source.name,
+                    events_found=len(events),
+                    documents_found=len(documents),
+                    city_id=config.city_profile.name.lower().replace(" ", "_").replace(",", ""),
+                )
+            
             return events, documents
 
         except Exception as e:
             logger.error(f"Scrape failed: {source.name} - {e}")
+            
+            # Log scrape failed
+            if self.activity:
+                await self.activity.log_scrape_failed(
+                    source_id or 0, source.name, str(e),
+                    city_id=config.city_profile.name.lower().replace(" ", "_").replace(",", ""),
+                )
             raise
 
     async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "") -> None:

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import Sidebar from '../components/Sidebar';
 
 interface QueueStatus {
   download: {
@@ -233,32 +234,33 @@ export default function QueuePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background p-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="animate-pulse space-y-4">
-            <div className="h-8 bg-gray-200 rounded w-1/4"></div>
-            <div className="grid grid-cols-3 gap-4">
-              {[1, 2, 3].map(i => (
-                <div key={i} className="h-32 bg-gray-200 rounded"></div>
-              ))}
+      <div className="flex min-h-screen">
+        <Sidebar />
+        <main className="flex-1 p-6">
+          <div className="max-w-7xl mx-auto">
+            <div className="animate-pulse space-y-4">
+              <div className="h-8 bg-gray-200 rounded w-1/4"></div>
+              <div className="grid grid-cols-3 gap-4">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="h-32 bg-gray-200 rounded"></div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="flex min-h-screen">
+      <Sidebar />
+
+      {/* Main Content */}
+      <main className="flex-1">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link href="/" className="text-muted-foreground hover:text-foreground">
-              ← Dashboard
-            </Link>
-            <h1 className="text-2xl font-bold">Processing Queue</h1>
-          </div>
+        <header className="flex h-14 items-center justify-between border-b px-6">
+          <h1 className="text-lg font-semibold">Queue</h1>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -279,8 +281,9 @@ export default function QueuePage() {
               </span>
             )}
           </div>
-        </div>
+        </header>
 
+        <div className="p-6 space-y-6">
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
             {error}
@@ -834,7 +837,8 @@ export default function QueuePage() {
             </div>
           </div>
         )}
-      </div>
+        </div>
+      </main>
     </div>
   );
 }
