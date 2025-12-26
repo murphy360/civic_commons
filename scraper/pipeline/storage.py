@@ -656,6 +656,81 @@ class DatabasePool:
         
         await conn.execute(query, *values)
 
+    async def update_event_from_document_metadata(
+        self,
+        conn: asyncpg.Connection,
+        event_id: int,
+        metadata: dict,
+    ) -> bool:
+        """
+        Update event with metadata extracted from linked documents.
+        
+        Only updates fields that are currently missing or have placeholder values.
+        This prevents AI-extracted data from overwriting human-entered data.
+        
+        Args:
+            conn: Database connection
+            event_id: Event to update
+            metadata: Dict with meeting_date, meeting_time, location, meeting_type
+            
+        Returns:
+            True if any fields were updated
+        """
+        import logging
+        logger = logging.getLogger("civic.storage")
+        
+        # Get current event data
+        event = await conn.fetchrow(
+            "SELECT start_time, location, category FROM events WHERE id = $1",
+            event_id
+        )
+        
+        if not event:
+            logger.warning(f"Event {event_id} not found for metadata update")
+            return False
+        
+        updates = {}
+        
+        # Update time if currently midnight (placeholder) and we have extracted time
+        if metadata.get("meeting_time") and metadata.get("meeting_date"):
+            current_time = event["start_time"]
+            # Check if time is midnight (00:00:00) - a placeholder value
+            if current_time and current_time.hour == 0 and current_time.minute == 0:
+                try:
+                    from datetime import datetime as dt
+                    # Parse the extracted date and time
+                    date_str = metadata["meeting_date"]
+                    time_str = metadata["meeting_time"]
+                    new_datetime = dt.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+                    
+                    # Only update if the dates match (sanity check)
+                    if current_time.date() == new_datetime.date():
+                        updates["start_time"] = new_datetime
+                        logger.info(f"Event {event_id}: updating time from 00:00 to {time_str}")
+                    else:
+                        logger.debug(
+                            f"Event {event_id}: date mismatch - event has {current_time.date()}, "
+                            f"metadata has {new_datetime.date()}"
+                        )
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Event {event_id}: failed to parse time '{metadata.get('meeting_time')}': {e}")
+        
+        # Update location if currently empty and we have extracted location
+        if metadata.get("location") and not event.get("location"):
+            updates["location"] = metadata["location"]
+            logger.info(f"Event {event_id}: adding location '{metadata['location'][:50]}...'")
+        
+        # Update category/meeting_type if we have it and current is generic
+        if metadata.get("meeting_type") and event.get("category") in (None, "", "meeting", "other"):
+            updates["category"] = metadata["meeting_type"]
+            logger.info(f"Event {event_id}: updating category to '{metadata['meeting_type']}'")
+        
+        if updates:
+            await self.update_event(conn, event_id, **updates)
+            return True
+        
+        return False
+
     async def upsert_event(
         self,
         conn: asyncpg.Connection,

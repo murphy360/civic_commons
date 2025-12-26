@@ -254,6 +254,9 @@ class AIQueueProcessor:
                         if city_id:
                             await self._on_document_processed(doc["id"], event_id, city_id)
 
+                # Extract meeting metadata (date, time, location) from agenda/minutes
+                await self._extract_meeting_metadata(conn, doc, validated_type)
+                
                 # Extract legislation mentions (non-video only)
                 if validated_type != "video":
                     await self._extract_legislation(conn, doc, validated_type)
@@ -381,6 +384,48 @@ class AIQueueProcessor:
             await conn.execute("""
                 UPDATE summaries SET status = 'failed', error_message = $2 WHERE id = $1
             """, summary_id, str(e)[:500])
+
+    async def _extract_meeting_metadata(self, conn, doc: dict, doc_type: str) -> None:
+        """
+        Extract meeting metadata (date, time, location) from document and update linked event.
+        
+        Only applies to meeting documents (agendas, minutes) and only updates events
+        that have placeholder values (midnight time, no location).
+        """
+        # Only process agendas and minutes - they contain meeting details
+        if doc_type not in ("agenda", "minutes", "packet"):
+            return
+        
+        try:
+            metadata = await self.doc_summarizer.extract_meeting_metadata(
+                title=doc["title"],
+                document_type=doc_type,
+                content_text=doc["content_markdown"],
+                local_path=doc["local_path"],
+            )
+            
+            if not metadata:
+                return
+            
+            # Find the linked event
+            event_id = await conn.fetchval("""
+                SELECT event_id FROM event_documents WHERE document_id = $1 LIMIT 1
+            """, doc["id"])
+            
+            if not event_id:
+                logger.debug(f"No linked event for document '{doc['title']}' - skipping metadata update")
+                return
+            
+            # Update the event with extracted metadata
+            updated = await self.db_pool.update_event_from_document_metadata(
+                conn, event_id, metadata
+            )
+            
+            if updated:
+                logger.info(f"Updated event {event_id} with metadata from '{doc['title']}'")
+                
+        except Exception as e:
+            logger.warning(f"Meeting metadata extraction failed for '{doc['title']}': {e}")
 
     async def _extract_legislation(self, conn, doc: dict, doc_type: str) -> None:
         """Extract and store legislation mentions from a document."""

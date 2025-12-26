@@ -22,9 +22,11 @@ from drivers import get_driver
 from models import Event, Document
 from mcp_client import MCPClient, get_mcp_client, close_mcp_client
 from pipeline.storage import DatabasePool
-from pipeline.ai_processor import AIEventProcessor
-from pipeline.ai import DocumentSummarizer, GeminiClient
-from pipeline.ai.summary import SummaryGenerator, SummaryType, get_period_bounds
+# AI processors run on MCP server - not needed in scraper
+# from pipeline.ai_processor import AIEventProcessor
+# from pipeline.ai import DocumentSummarizer, GeminiClient
+# from pipeline.ai.summary import SummaryGenerator, SummaryType, get_period_bounds
+# from pipeline.ai.cascade import SummaryCascadeManager
 from pipeline.ai.cascade import SummaryCascadeManager
 from pipeline.downloader import DocumentDownloader
 from pipeline.document_linker import DocumentLinker
@@ -105,11 +107,10 @@ class Worker:
 
         # Initialize MCP client for unified event management
         try:
-            self.mcp_client = await get_mcp_client()
-            await self.mcp_client.connect()
-            logger.info("MCP client connected to unified server")
+            self.mcp_client = await get_mcp_client(base_url=self.settings.mcp_url)
+            logger.info(f"MCP client connected to {self.settings.mcp_url}")
         except Exception as e:
-            logger.warning(f"Failed to connect to MCP server: {e}. Falling back to direct DB.")
+            logger.warning(f"Failed to connect to MCP server at {self.settings.mcp_url}: {e}. Falling back to direct DB.")
             self.mcp_client = None
 
         # Initialize document downloader
@@ -117,16 +118,11 @@ class Worker:
         self.document_downloader = DocumentDownloader(storage_dir=Path(download_dir))
         logger.info(f"Document downloader initialized (storage: {download_dir})")
 
-        # Initialize AI processor if API key is available
-        gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
-        if gemini_key:
-            self.ai_processor = AIEventProcessor(api_key=gemini_key)
-            gemini_client = GeminiClient(api_key=gemini_key)
-            self.doc_summarizer = DocumentSummarizer(gemini_client)
-            self.summary_generator = SummaryGenerator(gemini_client)
-            logger.info("AI processors enabled")
-        else:
-            logger.info("AI processing disabled (no GEMINI_API_KEY)")
+        # AI processors run on the MCP server - scraper is not responsible for AI
+        self.ai_processor = None
+        self.doc_summarizer = None
+        self.summary_generator = None
+        logger.info("AI processing delegated to MCP server")
 
         # Initialize document linker
         self.document_linker = DocumentLinker(self.db_pool, self.ai_processor)

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     postgres_user: str = "commons"
     postgres_password: str = ""
 
+    # MCP Server (for event deduplication and unified management)
+    mcp_url: str = "http://localhost:8000"
+    
     # Paths
     configs_dir: str = "/app/configs"
     

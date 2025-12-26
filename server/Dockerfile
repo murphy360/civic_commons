@@ -17,11 +17,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Expose MCP port
-EXPOSE 8080
+EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import asyncio; asyncio.run(__import__('main').health_check())" || exit 1
-
-# Run the MCP server in stdio mode
-CMD ["python", "main.py"]
+# Default command runs SSE server
+CMD ["uvicorn", "sse_server:app", "--host", "0.0.0.0", "--port", "8000"]

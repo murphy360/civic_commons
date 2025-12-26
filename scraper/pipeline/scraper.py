@@ -207,11 +207,10 @@ class ScraperExecutor:
         # Store events
         for event in events:
             try:
-                if self.ai_processor and self.ai_processor.enabled:
-                    event = await self._enrich_event_with_ai(event, city_name)
-
+                # Scraper does NOT do AI enrichment - server handles that via AI queue
+                # Just store the raw event data and let the server enrich it asynchronously
                 event_id = await self.db_pool.upsert_event(
-                    conn, source_id, event, ai_processor=self.ai_processor, mcp_client=mcp_client, entity_id=entity_id, city_id=city_id
+                    conn, source_id, event, ai_processor=None, mcp_client=mcp_client, entity_id=entity_id, city_id=city_id
                 )
                 logger.debug(f"Stored event: {event.title} -> {event_id}")
 
@@ -326,29 +325,11 @@ class ScraperExecutor:
         await self.db_pool.update_source_health(conn, source_id, success=True)
         logger.info(f"Completed storing results for {source.name}: {len(events)} events, {len(documents)} documents")
 
-    async def _enrich_event_with_ai(self, event: Event, city_name: str = "") -> Event:
-        """Use AI to normalize event data."""
-        if not self.ai_processor or not self.ai_processor.enabled:
-            return event
-
-        try:
-            normalized = await self.ai_processor.normalize_event(event, city_name=city_name)
-            if normalized:
-                if normalized.title:
-                    event.title = normalized.title
-                if normalized.category:
-                    event.category = normalized.category
-                if normalized.description:
-                    event.description = normalized.description
-        except Exception as e:
-            logger.warning(f"AI enrichment failed for '{event.title}': {e}")
-
-        return event
-
     async def link_documents_to_events(self, conn, documents: list[tuple[int, Document]]) -> None:
         """Use AI to link standalone documents to events."""
-        past_cutoff = datetime.now() - timedelta(days=365)
-        future_cutoff = datetime.now() + timedelta(days=90)
+        # Note: AI linking now happens on the server via AI queue
+        # This method is kept for backward compatibility but does nothing
+        pass
 
         events = await conn.fetch("""
             SELECT id, title, start_time, description

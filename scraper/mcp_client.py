@@ -1,9 +1,8 @@
 """
 Scraper MCP Client
 
-Connects to the unified MCP server to execute write operations for event/document
-management. Used by the scraper worker to create/update events without direct
-database access.
+Connects to the unified MCP server via SSE (Server-Sent Events) HTTP transport.
+Used by the scraper worker to execute tools and manage events without direct database access.
 
 This enables:
 - Event deduplication through MCP server
@@ -12,7 +11,8 @@ This enables:
 - Centralized business logic in MCP layer
 
 Connection:
-- TCP to localhost:9999 (internal docker network)
+- HTTP to localhost:8000 (internal docker network)
+- Uses SSE for streaming responses
 - All calls logged with source="scraper"
 - Timeouts at 30 seconds per operation
 """
@@ -23,45 +23,49 @@ import logging
 import os
 from typing import Any, Optional
 
+import httpx
+
 logger = logging.getLogger("scraper.mcp_client")
 
 
 class MCPClient:
     """
-    Client for communicating with the unified MCP server.
+    Client for communicating with the unified MCP server via SSE.
     
-    Provides write-level access to event management tools.
+    Provides tool execution through HTTP/SSE transport.
     """
     
-    def __init__(self, host: str = "localhost", port: int = 9999):
+    def __init__(self, base_url: str = "http://localhost:8000"):
         """
         Initialize MCP client.
         
         Args:
-            host: MCP server hostname (default: localhost for docker internal)
-            port: MCP server TCP port (default: 9999)
+            base_url: MCP server base URL (default: localhost:8000)
         """
-        self.host = host
-        self.port = port
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
+        self.base_url = base_url
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._connection_id: Optional[str] = None
         self._connected = False
-        self._request_id = 0
     
     async def connect(self) -> bool:
         """
-        Connect to MCP server.
+        Connect to MCP server and establish SSE connection.
         
         Returns:
             True if connected successfully, False otherwise
         """
         try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=5.0,
-            )
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+            
+            # Create a new connection
+            response = await self._http_client.post(f"{self.base_url}/connect")
+            response.raise_for_status()
+            
+            data = response.json()
+            self._connection_id = data["connection_id"]
             self._connected = True
-            logger.info(f"Connected to MCP server at {self.host}:{self.port}")
+            
+            logger.info(f"Connected to MCP server at {self.base_url} (connection: {self._connection_id})")
             return True
         except Exception as e:
             logger.error(f"Failed to connect to MCP server: {e}")
@@ -70,11 +74,16 @@ class MCPClient:
     
     async def disconnect(self) -> None:
         """Disconnect from MCP server."""
-        if self._writer:
-            self._writer.close()
-            await self._writer.wait_closed()
-        self._connected = False
-        logger.info("Disconnected from MCP server")
+        if self._connection_id and self._http_client:
+            try:
+                await self._http_client.delete(f"{self.base_url}/disconnect/{self._connection_id}")
+            except Exception as e:
+                logger.warning(f"Error disconnecting: {e}")
+            finally:
+                await self._http_client.aclose()
+                self._http_client = None
+                self._connected = False
+                logger.info("Disconnected from MCP server")
     
     async def call_tool(
         self,
@@ -88,48 +97,22 @@ class MCPClient:
         Args:
             tool_name: Name of tool to call
             args: Tool arguments
-            city_id: City context (optional)
+            city_id: City context (optional, passed to args)
             
         Returns:
             Tool result dictionary
         """
-        if not self._connected:
+        if not self._connected or not self._connection_id:
             if not await self.connect():
                 return {"error": "Not connected to MCP server"}
         
         try:
-            # Build MCP request (simplified JSON-RPC style)
-            self._request_id += 1
-            request = {
-                "jsonrpc": "2.0",
-                "id": self._request_id,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": args,
-                    "source": "scraper",
-                    "city_id": city_id,
-                },
-            }
+            # Make tool call
+            url = f"{self.base_url}/call/{self._connection_id}/{tool_name}"
+            response = await self._http_client.post(url, json=args)
+            response.raise_for_status()
             
-            # Send request
-            self._writer.write(json.dumps(request).encode() + b"\n")
-            await self._writer.drain()
-            
-            # Read response with timeout
-            response_line = await asyncio.wait_for(
-                self._reader.readline(),
-                timeout=30.0,
-            )
-            
-            response = json.loads(response_line.decode())
-            
-            # Check for errors
-            if "error" in response:
-                logger.error(f"Tool call error: {response['error']}")
-                return {"error": response["error"].get("message", "Unknown error")}
-            
-            return response.get("result", {})
+            return response.json()
         
         except asyncio.TimeoutError:
             error_msg = f"Tool call '{tool_name}' timed out after 30 seconds"
@@ -342,22 +325,20 @@ _client: Optional[MCPClient] = None
 
 
 async def get_mcp_client(
-    host: str = "localhost",
-    port: int = 9999,
+    base_url: str = "http://localhost:8000",
 ) -> MCPClient:
     """
     Get or create the global MCP client instance.
     
     Args:
-        host: MCP server host
-        port: MCP server port
+        base_url: MCP server base URL (default: http://localhost:8000)
         
     Returns:
         Initialized MCPClient
     """
     global _client
     if _client is None:
-        _client = MCPClient(host=host, port=port)
+        _client = MCPClient(base_url=base_url)
         if not await _client.connect():
             logger.warning("MCP client could not connect - operations will fail")
     return _client
@@ -369,3 +350,4 @@ async def close_mcp_client() -> None:
     if _client is not None:
         await _client.disconnect()
         _client = None
+

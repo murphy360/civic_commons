@@ -456,6 +456,150 @@ No explanations, no other text."""
             return []
 
 
+    async def extract_meeting_metadata(
+        self,
+        title: str,
+        document_type: Optional[str] = None,
+        content_text: Optional[str] = None,
+        local_path: Optional[str] = None,
+        max_content_chars: int = 5000,
+    ) -> Optional[dict]:
+        """
+        Extract meeting metadata (date, time, location) from agenda/minutes PDFs.
+        
+        Government meeting documents typically contain meeting details in headers
+        or opening sections. This extracts that structured data.
+        
+        Args:
+            title: Document title
+            document_type: Type hint (agenda, minutes, etc.)
+            content_text: Pre-extracted text content
+            local_path: Path to local file for PDF extraction if no content
+            max_content_chars: Maximum characters to send to AI
+            
+        Returns:
+            Dict with extracted metadata or None on failure:
+            {
+                "meeting_date": "2025-01-15",  # ISO format
+                "meeting_time": "19:00",  # 24-hour format
+                "location": "Council Chambers, 123 Main St",
+                "meeting_type": "Regular Meeting|Special Meeting|Work Session|etc",
+                "confidence": "high|medium|low"
+            }
+        """
+        if not self.enabled:
+            logger.debug("AI not enabled - skipping meeting metadata extraction")
+            return None
+        
+        # Only extract from meeting documents
+        if not self._is_meeting_document(title, document_type):
+            logger.debug(f"Document '{title}' is not a meeting document - skipping metadata extraction")
+            return None
+        
+        # Get content for text-based documents
+        content = content_text
+        if not content and local_path:
+            content = await extract_pdf_text(local_path, max_pages=3)  # Meeting info is usually at the top
+        
+        if not content:
+            logger.debug(f"No content available for metadata extraction from '{title}'")
+            return None
+        
+        # Truncate content - meeting info is usually in first few pages
+        content = content[:max_content_chars]
+        
+        prompt = f"""Extract meeting metadata from this government document.
+
+Document Title: {title}
+Document Type: {document_type or 'unknown'}
+
+DOCUMENT CONTENT:
+{content}
+
+---
+Extract the EXACT meeting details if present. Look for:
+1. Meeting date (e.g., "December 9, 2024", "12/9/2024")
+2. Meeting time (e.g., "7:00 PM", "6:30 p.m.")
+3. Location/venue (e.g., "Council Chambers", "City Hall, 123 Main St")
+4. Meeting type (Regular Meeting, Special Meeting, Work Session, Public Hearing, etc.)
+
+Respond with ONLY valid JSON (no markdown code blocks):
+{{"meeting_date": "YYYY-MM-DD or null", "meeting_time": "HH:MM (24-hour) or null", "location": "full location string or null", "meeting_type": "type or null", "confidence": "high|medium|low"}}
+
+IMPORTANT:
+- Convert dates to ISO format (YYYY-MM-DD)
+- Convert times to 24-hour format (e.g., 19:00 for 7:00 PM)
+- If a field is not found, use null (not empty string)
+- "high" confidence = exact date/time clearly stated
+- "medium" confidence = inferred from context
+- "low" confidence = guessed from title or partial info"""
+
+        system_prompt = """You are extracting meeting metadata from government documents.
+Return valid JSON only, no explanations.
+Be precise with dates and times - convert to standard formats.
+Only return data that is explicitly stated in the document."""
+
+        response = await self._client.generate(prompt, system_prompt)
+        
+        if not response:
+            logger.debug(f"No AI response for metadata extraction from '{title}'")
+            return None
+        
+        try:
+            # Clean up response
+            response_text = response.strip()
+            if response_text.startswith("```"):
+                parts = response_text.split("```")
+                if len(parts) >= 2:
+                    response_text = parts[1]
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:].lstrip()
+            
+            result = json.loads(response_text)
+            
+            # Validate and normalize the response
+            metadata = {
+                "meeting_date": result.get("meeting_date"),
+                "meeting_time": result.get("meeting_time"),
+                "location": result.get("location"),
+                "meeting_type": result.get("meeting_type"),
+                "confidence": result.get("confidence", "low"),
+            }
+            
+            # Validate date format
+            if metadata["meeting_date"]:
+                try:
+                    datetime.strptime(metadata["meeting_date"], "%Y-%m-%d")
+                except ValueError:
+                    logger.warning(f"Invalid date format '{metadata['meeting_date']}' from '{title}'")
+                    metadata["meeting_date"] = None
+            
+            # Validate time format
+            if metadata["meeting_time"]:
+                try:
+                    datetime.strptime(metadata["meeting_time"], "%H:%M")
+                except ValueError:
+                    logger.warning(f"Invalid time format '{metadata['meeting_time']}' from '{title}'")
+                    metadata["meeting_time"] = None
+            
+            # Check if we got any useful data
+            if not any([metadata["meeting_date"], metadata["meeting_time"], metadata["location"]]):
+                logger.debug(f"No useful metadata extracted from '{title}'")
+                return None
+            
+            logger.info(
+                f"Extracted meeting metadata from '{title}': "
+                f"date={metadata['meeting_date']}, time={metadata['meeting_time']}, "
+                f"location={metadata['location'][:50] + '...' if metadata['location'] and len(metadata['location']) > 50 else metadata['location']}"
+            )
+            
+            return metadata
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse meeting metadata JSON from '{title}': {e}")
+            logger.debug(f"Raw response: {response[:500]}")
+            return None
+    
     def _clean_response(self, response: str) -> str:
         """Clean up the AI response."""
         summary = response.strip()
