@@ -6,6 +6,7 @@ Side effects: Reads YAML files from /configs directory
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -80,6 +81,7 @@ class SourceConfig(BaseModel):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     enabled: bool = True
+    entity: str | None = None  # Reference to entity key
 
 
 class CityProfile(BaseModel):
@@ -87,6 +89,7 @@ class CityProfile(BaseModel):
     name: str
     zip: str
     timezone: str  # Required - must be set in config (e.g., "America/New_York")
+    data_start_date: str | None = None  # ISO date string (e.g., "2025-01-01") - no data before this date
 
 
 class AssistantConfig(BaseModel):
@@ -95,12 +98,46 @@ class AssistantConfig(BaseModel):
     persona: str = "A helpful assistant for local civic information."
 
 
+class ColorSchemeConfig(BaseModel):
+    """Color scheme for a domain (civic, education, etc.)."""
+    primary: str  # Tailwind color class (e.g., "blue-600")
+    light: str    # Light variant (e.g., "blue-100")
+    dark: str     # Dark variant (e.g., "blue-800")
+    border: str   # Border color (e.g., "blue-300")
+    icon: str | None = None  # Default emoji for domain
+
+
+class EntityConfig(BaseModel):
+    """Configuration for a civic entity (organization/body)."""
+    display_name: str
+    short_name: str | None = None
+    domain: str  # civic, education, community, recreation, business
+    type: str | None = None  # municipality, legislative_body, commission, board, school, etc.
+    parent: str | None = None  # Parent entity key
+    aliases: list[str] = Field(default_factory=list)
+    icon: str | None = None  # Emoji icon
+
+
 class CityConfig(BaseModel):
     """Complete configuration for a city deployment."""
     city_profile: CityProfile
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
+    color_schemes: dict[str, ColorSchemeConfig] = Field(default_factory=dict)
+    entities: dict[str, EntityConfig] = Field(default_factory=dict)
     sources: list[SourceConfig] = Field(default_factory=list)
     private_sources: list[SourceConfig] = Field(default_factory=list)
+    # Top-level data_start_date for backward compatibility
+    data_start_date: str | None = None  # ISO date string (e.g., "2025-01-01")
+
+    def get_data_start_date(self) -> datetime | None:
+        """Get the data start date as a datetime object. Returns None if not set."""
+        date_str = self.data_start_date
+        if date_str:
+            try:
+                return datetime.fromisoformat(date_str)
+            except ValueError:
+                return None
+        return None
 
     @property
     def all_enabled_sources(self) -> list[SourceConfig]:
@@ -108,6 +145,48 @@ class CityConfig(BaseModel):
         enabled = [s for s in self.sources if s.enabled]
         enabled.extend([s for s in self.private_sources if s.enabled])
         return enabled
+
+    def get_entity(self, entity_key: str | None) -> EntityConfig | None:
+        """Get entity config by key."""
+        if not entity_key:
+            return None
+        return self.entities.get(entity_key)
+
+    def get_entity_for_source(self, source: SourceConfig) -> EntityConfig | None:
+        """Get the entity associated with a source."""
+        return self.get_entity(source.entity)
+
+    def get_color_scheme(self, domain: str) -> ColorSchemeConfig | None:
+        """Get color scheme for a domain."""
+        return self.color_schemes.get(domain)
+
+    def get_entity_color_scheme(self, entity_key: str | None) -> ColorSchemeConfig | None:
+        """Get color scheme for an entity's domain."""
+        entity = self.get_entity(entity_key)
+        if entity:
+            return self.get_color_scheme(entity.domain)
+        return None
+
+    def validate_entity_references(self) -> list[str]:
+        """
+        Validate that all entity references in sources exist.
+        Returns list of warning messages for invalid references.
+        """
+        warnings = []
+        for source in self.sources + self.private_sources:
+            if source.entity and source.entity not in self.entities:
+                warnings.append(
+                    f"Source '{source.name}' references unknown entity '{source.entity}'"
+                )
+        
+        # Validate parent references in entities
+        for key, entity in self.entities.items():
+            if entity.parent and entity.parent not in self.entities:
+                warnings.append(
+                    f"Entity '{key}' references unknown parent '{entity.parent}'"
+                )
+        
+        return warnings
 
 
 # =============================================================================
@@ -131,7 +210,14 @@ def load_config(path: Path) -> CityConfig:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     
-    return CityConfig(**data)
+    config = CityConfig(**data)
+    
+    # Validate entity references and log warnings
+    warnings = config.validate_entity_references()
+    for warning in warnings:
+        print(f"Warning in {path.name}: {warning}")
+    
+    return config
 
 
 def load_all_configs(configs_dir: Path) -> list[CityConfig]:

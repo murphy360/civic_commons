@@ -71,6 +71,55 @@ CREATE TABLE IF NOT EXISTS cities (
 CREATE UNIQUE INDEX IF NOT EXISTS cities_city_id_idx ON cities(city_id);
 
 -- =============================================================================
+-- Entities (organizational units within a city)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS entities (
+    id SERIAL PRIMARY KEY,
+    city_id VARCHAR(64) NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
+    entity_key VARCHAR(64) NOT NULL,   -- Unique key within city (e.g., "city_council")
+    display_name VARCHAR(256) NOT NULL, -- Human-readable name
+    short_name VARCHAR(64),             -- Abbreviated name for UI
+    domain VARCHAR(64),                 -- Category (civic, education, community, recreation, business)
+    entity_type VARCHAR(64),            -- Type (department, board, commission, etc.)
+    parent_entity_key VARCHAR(64),      -- Parent entity key (for hierarchy)
+    parent_entity_id INTEGER,           -- Parent entity database ID (set after all entities created)
+    aliases TEXT[],                     -- Alternative names for matching
+    icon VARCHAR(64),                   -- Optional icon identifier
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    UNIQUE(city_id, entity_key)
+);
+
+CREATE INDEX IF NOT EXISTS entities_city_id_idx ON entities(city_id);
+CREATE INDEX IF NOT EXISTS entities_domain_idx ON entities(domain);
+CREATE INDEX IF NOT EXISTS entities_parent_idx ON entities(parent_entity_id);
+
+COMMENT ON TABLE entities IS 'Organizational units within a city (departments, boards, commissions)';
+COMMENT ON COLUMN entities.domain IS 'Category: civic, education, community, recreation, business';
+COMMENT ON COLUMN entities.entity_type IS 'Type: department, board, commission, committee, district';
+
+-- =============================================================================
+-- Color Schemes (visual styling for entity domains)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS color_schemes (
+    id SERIAL PRIMARY KEY,
+    city_id VARCHAR(64) NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
+    domain VARCHAR(64) NOT NULL,        -- Maps to entity domain
+    primary_color VARCHAR(32),          -- Main color (CSS format)
+    light_color VARCHAR(32),            -- Light variant for backgrounds
+    dark_color VARCHAR(32),             -- Dark variant for text
+    border_color VARCHAR(32),           -- Border color
+    icon VARCHAR(64),                   -- Default icon for domain
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    UNIQUE(city_id, domain)
+);
+
+CREATE INDEX IF NOT EXISTS color_schemes_city_id_idx ON color_schemes(city_id);
+
+COMMENT ON TABLE color_schemes IS 'Visual styling for entity domains per city';
+
+-- =============================================================================
 -- Data Sources
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS sources (
@@ -88,12 +137,14 @@ CREATE TABLE IF NOT EXISTS sources (
     last_error TEXT,
     consecutive_failures INTEGER DEFAULT 0 NOT NULL,
     trigger_requested_at TIMESTAMP,    -- Set by admin to request manual scrape
+    entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL, -- Associated entity
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS sources_city_id_idx ON sources(city_id);
 CREATE INDEX IF NOT EXISTS sources_source_type_idx ON sources(source_type);
+CREATE INDEX IF NOT EXISTS sources_entity_id_idx ON sources(entity_id);
 
 -- Migration: Add trigger_requested_at if it doesn't exist (for existing databases)
 DO $$ 
@@ -103,6 +154,18 @@ BEGIN
         WHERE table_name = 'sources' AND column_name = 'trigger_requested_at'
     ) THEN
         ALTER TABLE sources ADD COLUMN trigger_requested_at TIMESTAMP;
+    END IF;
+END $$;
+
+-- Migration: Add entity_id if it doesn't exist (for existing databases)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'sources' AND column_name = 'entity_id'
+    ) THEN
+        ALTER TABLE sources ADD COLUMN entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS sources_entity_id_idx ON sources(entity_id);
     END IF;
 END $$;
 
@@ -125,6 +188,7 @@ CREATE TABLE IF NOT EXISTS events (
     ai_summary_updated_at TIMESTAMP,   -- When the AI summary was last generated
     ai_model_used VARCHAR(64),         -- AI model used to generate the summary
     summary_priority TIMESTAMP,        -- Higher (more recent) values processed first in AI queue (set on manual reanalysis)
+    entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL, -- Associated entity
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL
 );
@@ -132,8 +196,21 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_start_time_idx ON events(start_time);
 CREATE INDEX IF NOT EXISTS events_summary_priority_idx ON events(summary_priority DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS events_category_idx ON events(category);
+CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity_id);
 -- Trigram index for fuzzy title matching
 CREATE INDEX IF NOT EXISTS events_title_trgm_idx ON events USING GIN(title gin_trgm_ops);
+
+-- Migration: Add entity_id to events if it doesn't exist (for existing databases)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'events' AND column_name = 'entity_id'
+    ) THEN
+        ALTER TABLE events ADD COLUMN entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity_id);
+    END IF;
+END $$;
 
 -- =============================================================================
 -- Event Sources (tracks which sources reported each event)
@@ -155,6 +232,28 @@ CREATE TABLE IF NOT EXISTS event_sources (
 CREATE INDEX IF NOT EXISTS event_sources_event_id_idx ON event_sources(event_id);
 CREATE INDEX IF NOT EXISTS event_sources_source_id_idx ON event_sources(source_id);
 CREATE INDEX IF NOT EXISTS event_sources_external_id_idx ON event_sources(source_id, external_id);
+
+-- =============================================================================
+-- Event-City Association (many-to-many)
+-- =============================================================================
+-- Links events to cities. Supports multi-city events (e.g., regional meetings)
+-- where the same event may be referenced by sources from multiple cities.
+CREATE TABLE IF NOT EXISTS event_cities (
+    id SERIAL PRIMARY KEY,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    city_id VARCHAR(64) NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
+    is_primary BOOLEAN DEFAULT true,   -- The city that first discovered this event
+    first_seen_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    last_seen_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    UNIQUE(event_id, city_id)
+);
+
+CREATE INDEX IF NOT EXISTS event_cities_event_id_idx ON event_cities(event_id);
+CREATE INDEX IF NOT EXISTS event_cities_city_id_idx ON event_cities(city_id);
+CREATE INDEX IF NOT EXISTS event_cities_primary_idx ON event_cities(event_id) WHERE is_primary = true;
+
+COMMENT ON TABLE event_cities IS 'Links events to cities, supporting multi-city events';
+COMMENT ON COLUMN event_cities.is_primary IS 'True if this city first discovered the event';
 
 -- =============================================================================
 -- Documents
@@ -222,6 +321,7 @@ CREATE TABLE IF NOT EXISTS documents (
     second_reading_date TIMESTAMP,     -- Second reading date
     third_reading_date TIMESTAMP,      -- Third reading date (if applicable)
     final_action_date TIMESTAMP,       -- When approved/failed/vetoed
+    entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL, -- Associated entity
     raw_data JSONB,
     search_vector TSVECTOR,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
@@ -236,6 +336,7 @@ CREATE INDEX IF NOT EXISTS documents_external_id_idx ON documents(source_id, ext
 CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS documents_linking_status_idx ON documents(linking_status);
 CREATE INDEX IF NOT EXISTS documents_summary_priority_idx ON documents(summary_priority DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS documents_entity_id_idx ON documents(entity_id);
 -- Content lifecycle queue indexes (for efficient queue retrieval)
 CREATE INDEX IF NOT EXISTS documents_content_status_idx ON documents(content_status);
 CREATE INDEX IF NOT EXISTS documents_content_status_date_idx ON documents(content_status, meeting_date DESC NULLS LAST);
@@ -251,6 +352,18 @@ CREATE INDEX IF NOT EXISTS documents_legislation_number_idx ON documents(legisla
 CREATE INDEX IF NOT EXISTS documents_legislation_year_idx ON documents(legislation_year) WHERE document_type IN ('ordinance', 'resolution');
 CREATE INDEX IF NOT EXISTS documents_legislation_status_idx ON documents(legislation_status) WHERE document_type IN ('ordinance', 'resolution');
 CREATE INDEX IF NOT EXISTS documents_proposed_date_idx ON documents(proposed_date) WHERE document_type IN ('ordinance', 'resolution');
+
+-- Migration: Add entity_id to documents if it doesn't exist (for existing databases)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'documents' AND column_name = 'entity_id'
+    ) THEN
+        ALTER TABLE documents ADD COLUMN entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS documents_entity_id_idx ON documents(entity_id);
+    END IF;
+END $$;
 
 -- =============================================================================
 -- Event-Document Association

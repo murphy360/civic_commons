@@ -7,6 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import EventFilters, { type FilterState } from './EventFilters';
 import { prioritizePeriodicSummary } from '../actions/documents';
 import { PeriodSummaryBadge } from '../components/PeriodSummaryBadge';
+import { EntityFlair, type EntityInfo } from '../components/EntityFlair';
 
 interface Event {
   id: number;
@@ -27,6 +28,16 @@ interface Event {
   legislation_count: number;
   ordinance_count: number;
   resolution_count: number;
+  // Entity information
+  entity_key: string | null;
+  entity_display_name: string | null;
+  entity_short_name: string | null;
+  entity_domain: string | null;
+  entity_icon: string | null;
+  // City information
+  city_id: string | null;
+  city_display_name: string | null;
+  city_count: number;
 }
 
 interface Summary {
@@ -342,6 +353,15 @@ function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }
     ? `/documents/${event.first_doc_id}`
     : `/events/${event.id}#documents`;
   
+  // Build entity info object for EntityFlair
+  const entityInfo: EntityInfo | null = event.entity_display_name ? {
+    entity_key: event.entity_key || undefined,
+    entity_display_name: event.entity_display_name || undefined,
+    entity_short_name: event.entity_short_name || undefined,
+    entity_domain: event.entity_domain || undefined,
+    entity_icon: event.entity_icon || undefined,
+  } : null;
+  
   return (
     <div className={`block border rounded-lg p-6 hover:border-primary/50 transition-colors ${
       isPast ? 'bg-muted/30' : ''
@@ -349,7 +369,21 @@ function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
         <Link href={`/events/${event.id}`} className="flex-1">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
-            {sources.map((source, idx) => (
+            {/* City badge - shown first */}
+            {event.city_display_name && (
+              <span 
+                className="text-xs font-medium px-2 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200"
+                title={event.city_count > 1 ? `Also in ${event.city_count - 1} other ${event.city_count === 2 ? 'city' : 'cities'}` : undefined}
+              >
+                📍 {event.city_display_name}{event.city_count > 1 ? ` +${event.city_count - 1}` : ''}
+              </span>
+            )}
+            {/* Entity badge (primary flair) */}
+            {entityInfo && (
+              <EntityFlair entity={entityInfo} size="sm" showIcon={true} />
+            )}
+            {/* Fall back to source names if no entity */}
+            {!entityInfo && sources.map((source, idx) => (
               <span 
                 key={idx}
                 className="text-xs font-medium px-2 py-1 rounded-full bg-primary/10 text-primary"
@@ -360,11 +394,6 @@ function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }
             {event.source_count > 1 && (
               <span className="text-xs font-medium px-2 py-1 rounded-full bg-emerald-100 text-emerald-800" title="Verified across multiple sources">
                 ✓ {event.source_count} sources
-              </span>
-            )}
-            {isPast && (
-              <span className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600">
-                Past
               </span>
             )}
             {event.has_agenda > 0 && (

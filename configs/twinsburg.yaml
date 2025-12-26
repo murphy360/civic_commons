@@ -9,12 +9,311 @@ city_profile:
   zip: "44087"
   timezone: "America/New_York"
 
+# Data cutoff - no events/documents before this date will be processed
+# This helps avoid pulling years of historical data on initial setup
+data_start_date: "2025-01-01"
+
 # =============================================================================
 # ASSISTANT PERSONALITY
 # =============================================================================
 assistant:
   name: "Wilcox"
   persona: "A helpful local historian who values accuracy and community context. Named after the Wilcox House, a historic landmark in Twinsburg."
+
+# =============================================================================
+# COLOR SCHEMES (Domain-based visual theming)
+# =============================================================================
+# These define consistent colors for different types of civic information.
+# Each domain has a Tailwind color palette with light/dark variants.
+color_schemes:
+  civic:
+    # City government, elected bodies, official meetings
+    primary: "blue-600"
+    light: "blue-100"
+    dark: "blue-800"
+    border: "blue-300"
+    icon: "🏛️"
+  education:
+    # Schools, school board, academic institutions
+    primary: "purple-600"
+    light: "purple-100"
+    dark: "purple-800"
+    border: "purple-300"
+    icon: "🎓"
+  community:
+    # Library, historical society, community organizations
+    primary: "amber-600"
+    light: "amber-100"
+    dark: "amber-800"
+    border: "amber-300"
+    icon: "🤝"
+  recreation:
+    # Parks, sports, fitness, outdoor activities
+    primary: "green-600"
+    light: "green-100"
+    dark: "green-800"
+    border: "green-300"
+    icon: "🌳"
+  business:
+    # Chamber of commerce, economic development
+    primary: "slate-600"
+    light: "slate-100"
+    dark: "slate-800"
+    border: "slate-300"
+    icon: "💼"
+
+# =============================================================================
+# ENTITIES (Organizational hierarchy)
+# =============================================================================
+# Entities represent civic bodies, organizations, and institutions.
+# Each entity belongs to a domain (for color-coding) and may have a parent.
+# Sources reference entities to provide proper attribution and labeling.
+entities:
+  # ---------------------------------------------------------------------------
+  # CIVIC DOMAIN - City Government
+  # ---------------------------------------------------------------------------
+  city_of_twinsburg:
+    display_name: "City of Twinsburg"
+    short_name: "City"
+    domain: civic
+    type: municipality
+    icon: "🏛️"
+  
+  city_council:
+    display_name: "City Council"
+    short_name: "Council"
+    domain: civic
+    type: legislative_body
+    parent: city_of_twinsburg
+    aliases: ["Twinsburg City Council", "Council"]
+    icon: "⚖️"
+  
+  planning_commission:
+    display_name: "Planning Commission"
+    short_name: "Planning"
+    domain: civic
+    type: commission
+    parent: city_of_twinsburg
+    aliases: ["Planning"]
+    icon: "📐"
+  
+  board_of_zoning_appeals:
+    display_name: "Board of Zoning Appeals"
+    short_name: "BZA"
+    domain: civic
+    type: board
+    parent: city_of_twinsburg
+    aliases: ["BZA", "Zoning Appeals"]
+    icon: "📋"
+  
+  architecture_review_board:
+    display_name: "Architecture Review Board"
+    short_name: "ARB"
+    domain: civic
+    type: board
+    parent: city_of_twinsburg
+    aliases: ["ARB", "Architectural Review"]
+    icon: "🏗️"
+  
+  parks_recreation_commission:
+    display_name: "Parks & Recreation Commission"
+    short_name: "Parks"
+    domain: recreation
+    type: commission
+    parent: city_of_twinsburg
+    aliases: ["Parks Commission", "Parks & Rec"]
+    icon: "🌳"
+  
+  environmental_commission:
+    display_name: "Environmental Commission"
+    short_name: "Environmental"
+    domain: civic
+    type: commission
+    parent: city_of_twinsburg
+    aliases: ["Environmental"]
+    icon: "🌿"
+  
+  civil_service_commission:
+    display_name: "Civil Service Commission"
+    short_name: "Civil Service"
+    domain: civic
+    type: commission
+    parent: city_of_twinsburg
+    icon: "👥"
+  
+  capital_improvement_board:
+    display_name: "Capital Improvement Board"
+    short_name: "CIB"
+    domain: civic
+    type: board
+    parent: city_of_twinsburg
+    aliases: ["CIB"]
+    icon: "🔧"
+  
+  finance_committee:
+    display_name: "Finance Committee"
+    short_name: "Finance"
+    domain: civic
+    type: committee
+    parent: city_council
+    icon: "💰"
+  
+  safety_committee:
+    display_name: "Safety Committee"
+    short_name: "Safety"
+    domain: civic
+    type: committee
+    parent: city_council
+    icon: "🚔"
+  
+  public_works_committee:
+    display_name: "Public Works Committee"
+    short_name: "Public Works"
+    domain: civic
+    type: committee
+    parent: city_council
+    icon: "🛠️"
+  
+  charter_review_commission:
+    display_name: "Charter Review Commission"
+    short_name: "Charter Review"
+    domain: civic
+    type: commission
+    parent: city_of_twinsburg
+    icon: "📜"
+  
+  jedi_committee:
+    display_name: "JEDI Committee"
+    short_name: "JEDI"
+    domain: civic
+    type: committee
+    parent: city_of_twinsburg
+    aliases: ["Justice, Equity, Diversity & Inclusion Committee"]
+    icon: "🌈"
+  
+  glen_eagles_advisory_board:
+    display_name: "Glen Eagles Golf Advisory Board"
+    short_name: "Glen Eagles"
+    domain: recreation
+    type: board
+    parent: city_of_twinsburg
+    icon: "⛳"
+  
+  treasury_investment_board:
+    display_name: "Treasury Investment Board"
+    short_name: "Treasury"
+    domain: civic
+    type: board
+    parent: city_of_twinsburg
+    icon: "🏦"
+
+  # ---------------------------------------------------------------------------
+  # EDUCATION DOMAIN - Schools
+  # ---------------------------------------------------------------------------
+  twinsburg_city_schools:
+    display_name: "Twinsburg City School District"
+    short_name: "TCSD"
+    domain: education
+    type: school_district
+    aliases: ["TCSD", "Twinsburg Schools"]
+    icon: "🎓"
+  
+  board_of_education:
+    display_name: "Board of Education"
+    short_name: "BOE"
+    domain: education
+    type: board
+    parent: twinsburg_city_schools
+    aliases: ["BOE", "School Board"]
+    icon: "📚"
+  
+  twinsburg_high_school:
+    display_name: "Twinsburg High School"
+    short_name: "THS"
+    domain: education
+    type: school
+    parent: twinsburg_city_schools
+    aliases: ["THS"]
+    icon: "🏫"
+  
+  chamberlin_middle_school:
+    display_name: "R. B. Chamberlin Middle School"
+    short_name: "Chamberlin"
+    domain: education
+    type: school
+    parent: twinsburg_city_schools
+    aliases: ["RBC", "Chamberlin"]
+    icon: "🏫"
+  
+  dodge_intermediate:
+    display_name: "George G. Dodge Intermediate School"
+    short_name: "Dodge"
+    domain: education
+    type: school
+    parent: twinsburg_city_schools
+    aliases: ["Dodge"]
+    icon: "🏫"
+  
+  bissell_elementary:
+    display_name: "Samuel Bissell Elementary School"
+    short_name: "Bissell"
+    domain: education
+    type: school
+    parent: twinsburg_city_schools
+    aliases: ["Bissell"]
+    icon: "🏫"
+  
+  wilcox_primary:
+    display_name: "Wilcox Primary School"
+    short_name: "Wilcox"
+    domain: education
+    type: school
+    parent: twinsburg_city_schools
+    icon: "🏫"
+  
+  twinsburg_athletics:
+    display_name: "Twinsburg Athletics"
+    short_name: "Athletics"
+    domain: education
+    type: athletics
+    parent: twinsburg_city_schools
+    icon: "🏆"
+
+  # ---------------------------------------------------------------------------
+  # COMMUNITY DOMAIN - Organizations
+  # ---------------------------------------------------------------------------
+  twinsburg_public_library:
+    display_name: "Twinsburg Public Library"
+    short_name: "Library"
+    domain: community
+    type: library
+    aliases: ["TPL", "Library"]
+    icon: "📖"
+  
+  twinsburg_historical_society:
+    display_name: "Twinsburg Historical Society"
+    short_name: "Historical Society"
+    domain: community
+    type: nonprofit
+    aliases: ["THS Historical"]
+    icon: "🏛️"
+  
+  twinsburg_rotary:
+    display_name: "Twinsburg Rotary Club"
+    short_name: "Rotary"
+    domain: community
+    type: service_club
+    icon: "🔄"
+
+  # ---------------------------------------------------------------------------
+  # BUSINESS DOMAIN
+  # ---------------------------------------------------------------------------
+  twinsburg_chamber:
+    display_name: "Twinsburg Chamber of Commerce"
+    short_name: "Chamber"
+    domain: business
+    type: chamber
+    icon: "💼"
 
 # =============================================================================
 # CIVICPLUS PLATFORM SETTINGS
@@ -66,6 +365,7 @@ sources:
   - name: "City Council"
     driver: "civic_plus"
     enabled: true
+    entity: city_council
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -85,6 +385,7 @@ sources:
   - name: "Finance Committee"
     driver: "civic_plus"
     enabled: true
+    entity: finance_committee
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -103,6 +404,7 @@ sources:
   - name: "Safety Committee"
     driver: "civic_plus"
     enabled: true
+    entity: safety_committee
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -121,6 +423,7 @@ sources:
   - name: "Public Works Committee"
     driver: "civic_plus"
     enabled: true
+    entity: public_works_committee
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -140,6 +443,7 @@ sources:
   - name: "Planning Commission"
     driver: "civic_plus"
     enabled: true
+    entity: planning_commission
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -158,6 +462,7 @@ sources:
   - name: "Board of Zoning Appeals"
     driver: "civic_plus"
     enabled: true
+    entity: board_of_zoning_appeals
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -176,6 +481,7 @@ sources:
   - name: "Architecture Review Board"
     driver: "civic_plus"
     enabled: true
+    entity: architecture_review_board
     schedule: "0 6 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -194,6 +500,7 @@ sources:
   - name: "Parks & Recreation Commission"
     driver: "civic_plus"
     enabled: true
+    entity: parks_recreation_commission
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -212,6 +519,7 @@ sources:
   - name: "Environmental Commission"
     driver: "civic_plus"
     enabled: true
+    entity: environmental_commission
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -230,6 +538,7 @@ sources:
   - name: "Civil Service Commission"
     driver: "civic_plus"
     enabled: true
+    entity: civil_service_commission
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -248,6 +557,7 @@ sources:
   - name: "Capital Improvement Board"
     driver: "civic_plus"
     enabled: true
+    entity: capital_improvement_board
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -267,6 +577,7 @@ sources:
   - name: "Charter Review Commission"
     driver: "civic_plus"
     enabled: true
+    entity: charter_review_commission
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -285,6 +596,7 @@ sources:
   - name: "Charter Review Oversight Committee"
     driver: "civic_plus"
     enabled: true
+    entity: charter_review_commission
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -303,6 +615,7 @@ sources:
   - name: "Community Forum"
     driver: "civic_plus"
     enabled: true
+    entity: city_of_twinsburg
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -321,6 +634,7 @@ sources:
   - name: "Compensation Committee"
     driver: "civic_plus"
     enabled: true
+    entity: city_council
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -339,6 +653,7 @@ sources:
   - name: "Comprehensive Plan Update Committee"
     driver: "civic_plus"
     enabled: true
+    entity: planning_commission
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -357,6 +672,7 @@ sources:
   - name: "Districting Commission"
     driver: "civic_plus"
     enabled: true
+    entity: city_council
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -375,6 +691,7 @@ sources:
   - name: "Glen Eagles Golf Advisory Board"
     driver: "civic_plus"
     enabled: true
+    entity: glen_eagles_advisory_board
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -393,6 +710,7 @@ sources:
   - name: "JEDI Committee"
     driver: "civic_plus"
     enabled: true
+    entity: jedi_committee
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -411,6 +729,7 @@ sources:
   - name: "Public Hearing"
     driver: "civic_plus"
     enabled: true
+    entity: city_council
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -429,6 +748,7 @@ sources:
   - name: "Records Retention"
     driver: "civic_plus"
     enabled: true
+    entity: city_of_twinsburg
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -447,6 +767,7 @@ sources:
   - name: "Treasury Investment Board"
     driver: "civic_plus"
     enabled: true
+    entity: treasury_investment_board
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -465,6 +786,7 @@ sources:
   - name: "Ward Meeting"
     driver: "civic_plus"
     enabled: true
+    entity: city_council
     schedule: "0 7 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -492,6 +814,7 @@ sources:
   - name: "2025 Legislation"
     driver: "civicplus_document_center"
     enabled: true
+    entity: city_council
     schedule: "0 8 * * *"
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -511,6 +834,7 @@ sources:
   - name: "2024 Legislation"
     driver: "civicplus_document_center"
     enabled: true
+    entity: city_council
     schedule: "0 8 * * 0"  # Weekly on Sunday (historical data)
     params:
       base_url: "https://www.mytwinsburg.com"
@@ -606,6 +930,7 @@ sources:
   - name: "TCSD Board of Education"
     driver: "tcsd_agendas"
     enabled: true
+    entity: board_of_education
     schedule: "0 8 * * *"
     params:
       url: "https://www.twinsburg.k12.oh.us/agendasandminutes.aspx"
@@ -623,6 +948,7 @@ sources:
   - name: "TCSD YouTube Channel"
     driver: "youtube_channel"
     enabled: true
+    entity: board_of_education
     schedule: "0 9 * * *"
     params:
       channel_url: "https://www.youtube.com/@twinsburgcityschooldistric821/streams"
@@ -637,6 +963,7 @@ sources:
   # EXAMPLES: Story time, summer reading, author visits, computer classes
   - name: "Public Library"
     driver: "libcal"
+    entity: twinsburg_public_library
     schedule: "0 7 * * *"
     params:
       library_id: "twinsburglibrary"
@@ -650,6 +977,7 @@ sources:
   # EXAMPLES: Historic home tours, genealogy workshops, artifact exhibits
   - name: "Historical Society"
     driver: "rss"
+    entity: twinsburg_historical_society
     schedule: "0 8 * * *"
     params:
       feed_url: "https://twinsburghistoricalsociety.org/events/feed"
@@ -664,6 +992,7 @@ sources:
   - name: "City YouTube Channel"
     driver: "youtube_channel"
     enabled: true
+    entity: city_of_twinsburg
     schedule: "0 9 * * *"
     params:
       channel_url: "https://www.youtube.com/@CityofTwinsburg/videos"
@@ -679,6 +1008,7 @@ sources:
   - name: "Twinsburg Rotary Club"
     driver: "icalendar"
     enabled: true
+    entity: twinsburg_rotary
     schedule: "0 8 * * *"
     params:
       feed_url: "https://portal.clubrunner.ca/4878/calendar-feed"
@@ -696,6 +1026,7 @@ sources:
   - name: "Twinsburg City School District"
     driver: "icalendar"
     enabled: true
+    entity: twinsburg_city_schools
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/Twinsburg_City_School_District_export.ics"
@@ -709,6 +1040,7 @@ sources:
   - name: "Twinsburg High School"
     driver: "icalendar"
     enabled: true
+    entity: twinsburg_high_school
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/Twinsburg_High_School_export.ics"
@@ -722,6 +1054,7 @@ sources:
   - name: "R. B. Chamberlin Middle School"
     driver: "icalendar"
     enabled: true
+    entity: chamberlin_middle_school
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/R_B_Chamberlin_Middle_School_export.ics"
@@ -735,6 +1068,7 @@ sources:
   - name: "George G. Dodge Intermediate School"
     driver: "icalendar"
     enabled: true
+    entity: dodge_intermediate
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/George_G_Dodge_Intermediate_School_export.ics"
@@ -748,6 +1082,7 @@ sources:
   - name: "Samuel Bissell Elementary School"
     driver: "icalendar"
     enabled: true
+    entity: bissell_elementary
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/Samuel_Bissell_Elementary_School_export.ics"
@@ -761,6 +1096,7 @@ sources:
   - name: "Wilcox Primary School"
     driver: "icalendar"
     enabled: true
+    entity: wilcox_primary
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/Wilcox_Primary_School_export.ics"
@@ -774,6 +1110,7 @@ sources:
   - name: "Twinsburg Athletics"
     driver: "icalendar"
     enabled: true
+    entity: twinsburg_athletics
     schedule: "0 8 * * *"
     params:
       feed_url: "https://www.twinsburg.k12.oh.us/ical/Twinsburg_Athletics_export.ics"
@@ -823,6 +1160,7 @@ sources:
   # FORMAT: Structured iCalendar (.ics) with precise timestamps and locations
   - name: "City Calendar (Other)"
     driver: "icalendar"
+    entity: city_of_twinsburg
     schedule: "0 8 * * *"  # Run AFTER all AgendaCenter sources
     params:
       feed_url: "https://www.mytwinsburg.com/common/modules/iCalendar/iCalendar.aspx?catID=14&feed=calendar"
@@ -842,6 +1180,7 @@ private_sources:
   - name: "Chamber of Commerce"
     driver: "rss"
     enabled: false
+    entity: twinsburg_chamber
     schedule: "0 8 * * *"
     params:
       feed_url: "https://twinsburgchamber.com/events/feed"

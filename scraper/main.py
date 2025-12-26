@@ -401,7 +401,7 @@ class Worker:
             logger.error(f"Error triggering cascade for document {document_id}: {e}")
 
     async def _initialize_all_sources(self, configs: list) -> None:
-        """Initialize all cities and sources in the database from config."""
+        """Initialize all cities, entities, and sources in the database from config."""
         async with self.db_pool.acquire() as conn:
             for config in configs:
                 city_id = config.city_profile.name.lower().replace(" ", "_").replace(",", "")
@@ -421,11 +421,23 @@ class Worker:
                     timezone=timezone,
                 )
                 
-                # Initialize sources
+                # Sync entities from config (must happen before sources)
+                entity_id_map = {}
+                if config.entities:
+                    entity_id_map = await self.db_pool.sync_entities(conn, city_id, config.entities)
+                
+                # Sync color schemes from config
+                if config.color_schemes:
+                    await self.db_pool.sync_color_schemes(conn, city_id, config.color_schemes)
+                
+                # Initialize sources with entity references
                 all_sources = config.sources + config.private_sources
 
                 for source in all_sources:
                     try:
+                        # Look up entity_id from entity_key
+                        entity_id = entity_id_map.get(source.entity) if source.entity else None
+                        
                         await self.db_pool.get_or_create_source(
                             conn,
                             name=source.name,
@@ -434,6 +446,7 @@ class Worker:
                             city_id=city_id,
                             is_enabled=source.enabled,
                             schedule=source.schedule,
+                            entity_id=entity_id,
                         )
                     except Exception as e:
                         logger.warning(f"Failed to initialize source '{source.name}': {e}")

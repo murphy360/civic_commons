@@ -142,6 +142,145 @@ class DatabasePool:
         return city_id
 
     # =========================================================================
+    # ENTITY OPERATIONS
+    # =========================================================================
+
+    async def sync_entities(
+        self,
+        conn: asyncpg.Connection,
+        city_id: str,
+        entities: dict,  # dict[str, EntityConfig]
+    ) -> dict[str, int]:
+        """
+        Sync entities from config to database.
+        
+        Args:
+            conn: Database connection
+            city_id: City identifier
+            entities: Dict of entity_key -> EntityConfig from config
+        
+        Returns:
+            Dict mapping entity_key to database entity ID
+        """
+        entity_id_map = {}
+        
+        for entity_key, entity in entities.items():
+            # Upsert the entity
+            row = await conn.fetchrow(
+                """
+                INSERT INTO entities (
+                    city_id, entity_key, display_name, short_name, domain,
+                    entity_type, parent_entity_key, aliases, icon
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ON CONFLICT (city_id, entity_key) DO UPDATE SET
+                    display_name = EXCLUDED.display_name,
+                    short_name = EXCLUDED.short_name,
+                    domain = EXCLUDED.domain,
+                    entity_type = EXCLUDED.entity_type,
+                    parent_entity_key = EXCLUDED.parent_entity_key,
+                    aliases = EXCLUDED.aliases,
+                    icon = EXCLUDED.icon,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                city_id,
+                entity_key,
+                entity.display_name,
+                entity.short_name,
+                entity.domain,
+                entity.type,
+                entity.parent,
+                entity.aliases if entity.aliases else None,
+                entity.icon,
+            )
+            entity_id_map[entity_key] = row["id"]
+        
+        # Update parent_entity_id references now that all entities exist
+        for entity_key, entity in entities.items():
+            if entity.parent and entity.parent in entity_id_map:
+                await conn.execute(
+                    """
+                    UPDATE entities SET parent_entity_id = $1
+                    WHERE city_id = $2 AND entity_key = $3
+                    """,
+                    entity_id_map[entity.parent],
+                    city_id,
+                    entity_key,
+                )
+        
+        logger.info(f"Synced {len(entity_id_map)} entities for city {city_id}")
+        return entity_id_map
+
+    async def sync_color_schemes(
+        self,
+        conn: asyncpg.Connection,
+        city_id: str,
+        color_schemes: dict,  # dict[str, ColorSchemeConfig]
+    ) -> None:
+        """
+        Sync color schemes from config to database.
+        
+        Args:
+            conn: Database connection
+            city_id: City identifier
+            color_schemes: Dict of domain -> ColorSchemeConfig from config
+        """
+        for domain, scheme in color_schemes.items():
+            await conn.execute(
+                """
+                INSERT INTO color_schemes (
+                    city_id, domain, primary_color, light_color, 
+                    dark_color, border_color, icon
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (city_id, domain) DO UPDATE SET
+                    primary_color = EXCLUDED.primary_color,
+                    light_color = EXCLUDED.light_color,
+                    dark_color = EXCLUDED.dark_color,
+                    border_color = EXCLUDED.border_color,
+                    icon = EXCLUDED.icon,
+                    updated_at = NOW()
+                """,
+                city_id,
+                domain,
+                scheme.primary,
+                scheme.light,
+                scheme.dark,
+                scheme.border,
+                scheme.icon,
+            )
+        
+        logger.info(f"Synced {len(color_schemes)} color schemes for city {city_id}")
+
+    async def get_entity_id(
+        self,
+        conn: asyncpg.Connection,
+        city_id: str,
+        entity_key: str | None,
+    ) -> int | None:
+        """
+        Get entity database ID from entity key.
+        
+        Args:
+            conn: Database connection
+            city_id: City identifier
+            entity_key: Entity key from config (e.g., "city_council")
+        
+        Returns:
+            Entity database ID or None if not found
+        """
+        if not entity_key:
+            return None
+        
+        row = await conn.fetchrow(
+            "SELECT id FROM entities WHERE city_id = $1 AND entity_key = $2",
+            city_id,
+            entity_key,
+        )
+        return row["id"] if row else None
+
+    # =========================================================================
     # SOURCE OPERATIONS
     # =========================================================================
 
@@ -154,6 +293,7 @@ class DatabasePool:
         city_id: str,
         is_enabled: bool = True,
         schedule: str = "",
+        entity_id: int | None = None,
     ) -> int:
         """
         Get existing source or create new one.
@@ -166,6 +306,7 @@ class DatabasePool:
             city_id: City identifier
             is_enabled: Whether the source is enabled for scraping
             schedule: Cron schedule expression
+            entity_id: Database ID of the associated entity
         
         Returns:
             Source ID (integer)
@@ -185,12 +326,13 @@ class DatabasePool:
             await conn.execute(
                 """
                 UPDATE sources 
-                SET is_enabled = $1, config = $2, city_id = $3
-                WHERE id = $4
+                SET is_enabled = $1, config = $2, city_id = $3, entity_id = $4
+                WHERE id = $5
                 """,
                 is_enabled,
                 config_json,
                 city_id,
+                entity_id,
                 row["id"],
             )
             return row["id"]
@@ -199,8 +341,8 @@ class DatabasePool:
         config_json = json.dumps(config) if config else "{}"
         row = await conn.fetchrow(
             """
-            INSERT INTO sources (city_id, name, source_type, driver_type, url, config, is_enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO sources (city_id, name, source_type, driver_type, url, config, is_enabled, entity_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id
             """,
             city_id,
@@ -210,6 +352,7 @@ class DatabasePool:
             config.get("base_url", config.get("feed_url", "")),  # url
             config_json,
             is_enabled,
+            entity_id,
         )
         return row["id"]
 
@@ -343,12 +486,18 @@ class DatabasePool:
         self,
         conn: asyncpg.Connection,
         event: Event,
+        entity_id: int | None = None,
     ) -> int:
         """
         Create a new canonical event.
         
         Note: This creates the event only. Use add_event_source() to link
         it to sources.
+        
+        Args:
+            conn: Database connection
+            event: Event model instance
+            entity_id: Optional entity ID for the event
         
         Returns:
             Event ID (integer)
@@ -366,9 +515,9 @@ class DatabasePool:
             INSERT INTO events (
                 title, description, start_time, end_time, location,
                 category, is_cancelled, is_virtual, virtual_url,
-                created_at, updated_at
+                entity_id, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
             RETURNING id
             """,
             event.title,
@@ -380,6 +529,7 @@ class DatabasePool:
             getattr(event, 'is_cancelled', False),
             getattr(event, 'is_virtual', False),
             getattr(event, 'virtual_url', None),
+            entity_id,
             now,
         )
         return row["id"]
@@ -430,6 +580,47 @@ class DatabasePool:
         )
         return row["id"]
     
+    async def add_event_city(
+        self,
+        conn: asyncpg.Connection,
+        event_id: int,
+        city_id: str,
+        is_primary: bool = True,
+    ) -> int:
+        """
+        Link an event to a city.
+        
+        Supports multi-city events where the same event may be referenced
+        by sources from different cities (e.g., regional meetings).
+        
+        Args:
+            conn: Database connection
+            event_id: ID of the event
+            city_id: City identifier (e.g., 'twinsburg_oh')
+            is_primary: True if this city first discovered this event
+        
+        Returns:
+            event_cities ID
+        """
+        now = datetime.utcnow()
+        
+        row = await conn.fetchrow(
+            """
+            INSERT INTO event_cities (
+                event_id, city_id, is_primary, first_seen_at, last_seen_at
+            )
+            VALUES ($1, $2, $3, $4, $4)
+            ON CONFLICT (event_id, city_id) DO UPDATE SET
+                last_seen_at = EXCLUDED.last_seen_at
+            RETURNING id
+            """,
+            event_id,
+            city_id,
+            is_primary,
+            now,
+        )
+        return row["id"]
+    
     async def update_event(
         self,
         conn: asyncpg.Connection,
@@ -472,6 +663,8 @@ class DatabasePool:
         event: Event,
         ai_processor: Optional["AIEventProcessor"] = None,
         mcp_client: Optional[Any] = None,
+        entity_id: int | None = None,
+        city_id: str | None = None,
     ) -> int:
         """
         Insert or update an event with MCP-powered deduplication (if available).
@@ -487,6 +680,8 @@ class DatabasePool:
             event: Event to upsert
             ai_processor: Optional AI processor for local fallback
             mcp_client: Optional MCP client for centralized decisions
+            entity_id: Optional entity ID from the source's config
+            city_id: Optional city identifier for event-city association
         
         Returns:
             Event ID (integer)
@@ -502,12 +697,15 @@ class DatabasePool:
                 
                 if action == "create":
                     # Create new event
-                    event_id = await self.create_event(conn, event)
+                    event_id = await self.create_event(conn, event, entity_id=entity_id)
                     await self.add_event_source(
                         conn, event_id, source_id,
                         external_id=event.external_id,
                         source_url=event.source_url,
                     )
+                    # Link event to city (primary since we're creating it)
+                    if city_id:
+                        await self.add_event_city(conn, event_id, city_id, is_primary=True)
                     logger.info(f"MCP-created event: '{event.title}' -> {event_id}")
                     return event_id
                 
@@ -520,6 +718,9 @@ class DatabasePool:
                             external_id=event.external_id,
                             source_url=event.source_url,
                         )
+                        # Link event to city (not primary since we're merging)
+                        if city_id:
+                            await self.add_event_city(conn, merge_event_id, city_id, is_primary=False)
                         logger.info(
                             f"MCP-merged event '{event.title}' to {merge_event_id} "
                             f"(confidence: {confidence:.2f})"
@@ -534,7 +735,7 @@ class DatabasePool:
         
         # Fall back to local deduplication logic
         return await self._upsert_event_local(
-            conn, source_id, event, ai_processor
+            conn, source_id, event, ai_processor, entity_id=entity_id, city_id=city_id
         )
     
     async def _get_mcp_event_decision(
@@ -608,6 +809,8 @@ class DatabasePool:
         source_id: int,
         event: Event,
         ai_processor: Optional["AIEventProcessor"] = None,
+        entity_id: int | None = None,
+        city_id: str | None = None,
     ) -> int:
         """
         Insert or update an event using local deduplication logic.
@@ -626,6 +829,8 @@ class DatabasePool:
             source_id: ID of the source
             event: Event to upsert
             ai_processor: Optional AI processor for uncertain deduplication
+            entity_id: Optional entity ID from the source's config
+            city_id: Optional city identifier for event-city association
         
         Returns:
             Event ID (integer)
@@ -646,6 +851,9 @@ class DatabasePool:
                     end_time=event.ends_at,
                     location=event.location,
                 )
+                # Ensure event-city association exists (not primary since event already existed)
+                if city_id:
+                    await self.add_event_city(conn, existing["id"], city_id, is_primary=False)
                 return existing["id"]
         
         # Check for similar events by title/date (basic deduplication)
@@ -666,6 +874,9 @@ class DatabasePool:
                     external_id=event.external_id,
                     source_url=event.source_url,
                 )
+                # Link event to city (not primary since we're merging)
+                if city_id:
+                    await self.add_event_city(conn, match["id"], city_id, is_primary=False)
                 logger.info(
                     "Auto-merged event '%s' to existing event %d (similarity: %.2f)",
                     event.title, match["id"], similarity
@@ -693,6 +904,9 @@ class DatabasePool:
                         external_id=event.external_id,
                         source_url=event.source_url,
                     )
+                    # Link event to city (not primary since we're merging)
+                    if city_id:
+                        await self.add_event_city(conn, match["id"], city_id, is_primary=False)
                     logger.info(
                         "AI-verified merge: '%s' to existing event %d (similarity: %.2f)",
                         event.title, match["id"], similarity
@@ -705,7 +919,7 @@ class DatabasePool:
                     )
         
         # No match found - create new event
-        event_id = await self.create_event(conn, event)
+        event_id = await self.create_event(conn, event, entity_id=entity_id)
         
         # Link to this source
         await self.add_event_source(
@@ -715,6 +929,10 @@ class DatabasePool:
             external_id=event.external_id,
             source_url=event.source_url,
         )
+        
+        # Link event to city (primary since we're creating it)
+        if city_id:
+            await self.add_event_city(conn, event_id, city_id, is_primary=True)
         
         return event_id
     

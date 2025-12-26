@@ -105,6 +105,12 @@ class ScraperExecutor:
                 async with self.db_pool.acquire() as conn:
                     # Generate city_id from city name (same logic as main.py)
                     city_id = config.city_profile.name.lower().replace(" ", "_").replace(",", "")
+                    
+                    # Look up entity_id from source's entity reference
+                    entity_id = None
+                    if source.entity:
+                        entity_id = await self.db_pool.get_entity_id(conn, city_id, source.entity)
+                    
                     await self._store_results(
                         conn=conn,
                         source=source,
@@ -113,6 +119,8 @@ class ScraperExecutor:
                         city_id=city_id,
                         city_name=config.city_profile.name,
                         mcp_client=self.mcp_client,
+                        entity_id=entity_id,
+                        data_start_date=config.get_data_start_date(),
                     )
 
             logger.info(f"Completed scrape: {source.name} - {len(events)} events, {len(documents)} documents")
@@ -139,13 +147,49 @@ class ScraperExecutor:
                 )
             raise
 
-    async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "", mcp_client=None) -> None:
+    async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "", mcp_client=None, entity_id: int | None = None, data_start_date: datetime | None = None) -> None:
         """
         Store scraped results in database.
         
         Documents are registered as "discovered" - immediately visible in UI
         but queued for async download/processing. No inline downloads.
+        
+        Args:
+            conn: Database connection
+            source: Source configuration
+            events: List of events to store
+            documents: List of standalone documents to store
+            city_id: City identifier
+            city_name: City display name (for AI enrichment)
+            mcp_client: Optional MCP client for event deduplication
+            entity_id: Optional entity ID from source config
+            data_start_date: Optional cutoff date - skip items before this date
         """
+        # Filter events and documents by data_start_date if set
+        if data_start_date:
+            original_event_count = len(events)
+            original_doc_count = len(documents)
+            
+            # Filter events by starts_at (the Event model uses starts_at, not start_time)
+            events = [e for e in events if e.starts_at and e.starts_at >= data_start_date]
+            
+            # Filter standalone documents by meeting_date or published_at
+            def doc_after_start(d):
+                doc_date = d.meeting_date or d.published_at
+                return not doc_date or doc_date >= data_start_date
+            
+            documents = [d for d in documents if doc_after_start(d)]
+            
+            # Also filter documents attached to events
+            for event in events:
+                if event.documents:
+                    event.documents = [d for d in event.documents if doc_after_start(d)]
+            
+            filtered_events = original_event_count - len(events)
+            filtered_docs = original_doc_count - len(documents)
+            if filtered_events > 0 or filtered_docs > 0:
+                logger.info(f"Filtered out {filtered_events} events and {filtered_docs} documents before {data_start_date.strftime('%Y-%m-%d')}")
+
         if not events and not documents:
             return
 
@@ -157,6 +201,7 @@ class ScraperExecutor:
             city_id=city_id,
             is_enabled=source.enabled,
             schedule=source.schedule,
+            entity_id=entity_id,
         )
 
         # Store events
@@ -166,7 +211,7 @@ class ScraperExecutor:
                     event = await self._enrich_event_with_ai(event, city_name)
 
                 event_id = await self.db_pool.upsert_event(
-                    conn, source_id, event, ai_processor=self.ai_processor, mcp_client=mcp_client
+                    conn, source_id, event, ai_processor=self.ai_processor, mcp_client=mcp_client, entity_id=entity_id, city_id=city_id
                 )
                 logger.debug(f"Stored event: {event.title} -> {event_id}")
 
@@ -174,7 +219,7 @@ class ScraperExecutor:
                 for document in event.documents:
                     try:
                         doc_id = await self._register_discovered_document(
-                            conn, source_id, document, event_id=event_id
+                            conn, source_id, document, event_id=event_id, entity_id=entity_id
                         )
                         logger.debug(f"Registered event document: {document.title} -> {doc_id}")
                     except Exception as e:
@@ -186,7 +231,7 @@ class ScraperExecutor:
         # Register standalone documents as discovered
         for document in documents:
             try:
-                doc_id = await self._register_discovered_document(conn, source_id, document)
+                doc_id = await self._register_discovered_document(conn, source_id, document, entity_id=entity_id)
                 logger.debug(f"Registered standalone document: {document.title} -> {doc_id}")
             except Exception as e:
                 logger.error(f"Failed to register document '{document.title}': {e}")
@@ -199,12 +244,20 @@ class ScraperExecutor:
         conn, 
         source_id: int, 
         document: Document, 
-        event_id: int = None
+        event_id: int = None,
+        entity_id: int = None,
     ) -> int:
         """
         Register a document as discovered.
         Creates a placeholder that's immediately visible in the UI.
         Document will be queued for download/processing asynchronously.
+        
+        Args:
+            conn: Database connection
+            source_id: Source ID
+            document: Document to register
+            event_id: Optional associated event ID
+            entity_id: Optional entity ID from source config
         """
         # Extract document type
         doc_type = None
@@ -252,12 +305,12 @@ class ScraperExecutor:
         doc_id = await conn.fetchval("""
             INSERT INTO documents (
                 source_id, external_id, title, document_type, source_url,
-                meeting_date, content_status, discovered_at, raw_data
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+                meeting_date, content_status, discovered_at, raw_data, entity_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9)
             RETURNING id
         """, source_id, external_id, document.title, doc_type, source_url,
              meeting_date, initial_status, 
-             getattr(document, 'raw_data', None))
+             getattr(document, 'raw_data', None), entity_id)
         
         # Link to event if provided
         if event_id and doc_id:

@@ -24,6 +24,16 @@ interface Event {
   legislation_count: number;
   ordinance_count: number;
   resolution_count: number;
+  // Entity information
+  entity_key: string | null;
+  entity_display_name: string | null;
+  entity_short_name: string | null;
+  entity_domain: string | null;
+  entity_icon: string | null;
+  // City information
+  city_id: string | null;
+  city_display_name: string | null;
+  city_count: number;
 }
 
 interface Summary {
@@ -66,12 +76,23 @@ async function getUpcomingEvents(): Promise<Event[]> {
         (e.ai_summary IS NOT NULL) as has_ai_summary,
         (SELECT COUNT(DISTINCT lm.id) FROM legislation_mentions lm WHERE lm.event_id = e.id)::int as legislation_count,
         (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'ordinance')::int as ordinance_count,
-        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'resolution')::int as resolution_count
+        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'resolution')::int as resolution_count,
+        COALESCE(ent.entity_key, src_ent.entity_key) as entity_key,
+        COALESCE(ent.display_name, src_ent.display_name) as entity_display_name,
+        COALESCE(ent.short_name, src_ent.short_name) as entity_short_name,
+        COALESCE(ent.domain, src_ent.domain) as entity_domain,
+        COALESCE(ent.icon, src_ent.icon) as entity_icon,
+        (SELECT ec.city_id FROM event_cities ec WHERE ec.event_id = e.id AND ec.is_primary = true LIMIT 1) as city_id,
+        (SELECT c.display_name FROM event_cities ec JOIN cities c ON ec.city_id = c.city_id WHERE ec.event_id = e.id AND ec.is_primary = true LIMIT 1) as city_display_name,
+        (SELECT COUNT(*) FROM event_cities ec WHERE ec.event_id = e.id)::int as city_count
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id
+      LEFT JOIN entities ent ON e.entity_id = ent.id
+      LEFT JOIN entities src_ent ON s.entity_id = src_ent.id
       WHERE e.start_time >= NOW() - INTERVAL '1 day'
-      GROUP BY e.id
+      GROUP BY e.id, ent.entity_key, ent.display_name, ent.short_name, ent.domain, ent.icon,
+               src_ent.entity_key, src_ent.display_name, src_ent.short_name, src_ent.domain, src_ent.icon
       ORDER BY e.start_time ASC
       LIMIT 50
     `;
@@ -135,12 +156,23 @@ async function getPastEvents(): Promise<PastEventsData> {
         (e.ai_summary IS NOT NULL) as has_ai_summary,
         (SELECT COUNT(DISTINCT lm.id) FROM legislation_mentions lm WHERE lm.event_id = e.id)::int as legislation_count,
         (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'ordinance')::int as ordinance_count,
-        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'resolution')::int as resolution_count
+        (SELECT COUNT(DISTINCT d.id) FROM legislation_mentions lm JOIN documents d ON lm.document_id = d.id WHERE lm.event_id = e.id AND d.document_type = 'resolution')::int as resolution_count,
+        COALESCE(ent.entity_key, src_ent.entity_key) as entity_key,
+        COALESCE(ent.display_name, src_ent.display_name) as entity_display_name,
+        COALESCE(ent.short_name, src_ent.short_name) as entity_short_name,
+        COALESCE(ent.domain, src_ent.domain) as entity_domain,
+        COALESCE(ent.icon, src_ent.icon) as entity_icon,
+        (SELECT ec.city_id FROM event_cities ec WHERE ec.event_id = e.id AND ec.is_primary = true LIMIT 1) as city_id,
+        (SELECT c.display_name FROM event_cities ec JOIN cities c ON ec.city_id = c.city_id WHERE ec.event_id = e.id AND ec.is_primary = true LIMIT 1) as city_display_name,
+        (SELECT COUNT(*) FROM event_cities ec WHERE ec.event_id = e.id)::int as city_count
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id
+      LEFT JOIN entities ent ON e.entity_id = ent.id
+      LEFT JOIN entities src_ent ON s.entity_id = src_ent.id
       WHERE e.start_time < NOW() - INTERVAL '1 day'
-      GROUP BY e.id
+      GROUP BY e.id, ent.entity_key, ent.display_name, ent.short_name, ent.domain, ent.icon,
+               src_ent.entity_key, src_ent.display_name, src_ent.short_name, src_ent.domain, src_ent.icon
       ORDER BY e.start_time DESC
       LIMIT 50
     `;
