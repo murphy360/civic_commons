@@ -4,21 +4,26 @@ Civic Commons MCP Server - Tool Definitions
 Defines the MCP tools exposed to LLM clients.
 """
 
+import json
+import logging
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from db import Database
 
+logger = logging.getLogger("civic_commons.tools")
 
-def register_tools(mcp: FastMCP, db: Database) -> None:
+
+def register_tools(mcp: FastMCP, db: Database, ai_processor: Optional[Any] = None) -> None:
     """
     Register all MCP tools with the server.
     
     Args:
         mcp: The FastMCP server instance
         db: The database instance
+        ai_processor: Optional AIEventProcessor for event deduplication
     """
     
     @mcp.tool()
@@ -575,3 +580,4 @@ def register_tools(mcp: FastMCP, db: Database) -> None:
             "is_free": is_free if is_free else None,  # None if we can't determine
             "target_audience": target_audience,
         }
+

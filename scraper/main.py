@@ -20,6 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from config import load_all_configs, Settings
 from drivers import get_driver
 from models import Event, Document
+from mcp_client import MCPClient, get_mcp_client, close_mcp_client
 from pipeline.storage import DatabasePool
 from pipeline.ai_processor import AIEventProcessor
 from pipeline.ai import DocumentSummarizer, GeminiClient
@@ -77,18 +78,40 @@ class Worker:
         self.queue_manager: Optional[QueueManager] = None
         self.queue_processor: Optional[QueueProcessor] = None
         self.activity_logger: Optional[ActivityLogger] = None
+        self.mcp_client: Optional[MCPClient] = None
         self._shutdown_event = asyncio.Event()
         self._configs: list = []
 
     async def initialize(self) -> None:
         """Initialize database connection pool and processors."""
         logger.info("Initializing database connection pool...")
-        self.db_pool = await DatabasePool.create(self.settings.get_database_url())
-
-        # Initialize activity logger
-        self.activity_logger = ActivityLogger(self.db_pool._pool)
+        
+        # Initialize activity logger first (needed for DatabasePool)
+        # Create a temporary pool just for the activity logger
+        import asyncpg
+        temp_pool = await asyncpg.create_pool(
+            self.settings.get_database_url(),
+            min_size=2,
+            max_size=5,
+        )
+        self.activity_logger = ActivityLogger(temp_pool)
+        
+        # Now create DatabasePool with activity logger
+        self.db_pool = await DatabasePool.create(
+            self.settings.get_database_url(),
+            activity_logger=self.activity_logger
+        )
         await self.activity_logger.log_system_started()
         logger.info("Activity logger initialized")
+
+        # Initialize MCP client for unified event management
+        try:
+            self.mcp_client = await get_mcp_client()
+            await self.mcp_client.connect()
+            logger.info("MCP client connected to unified server")
+        except Exception as e:
+            logger.warning(f"Failed to connect to MCP server: {e}. Falling back to direct DB.")
+            self.mcp_client = None
 
         # Initialize document downloader
         download_dir = os.getenv("DOCUMENT_STORAGE_DIR", "/data/documents")
@@ -127,6 +150,7 @@ class Worker:
             self.db_pool, self.ai_processor, self.document_downloader, 
             queue_manager=self.queue_manager,
             activity_logger=self.activity_logger,
+            mcp_client=self.mcp_client,
         )
 
         # Initialize unified queue processor
@@ -449,6 +473,7 @@ class Worker:
         if self.settings.run_on_startup:
             logger.info("Running initial scrape...")
             for config in configs:
+                city_id = config.city_profile.name.lower().replace(" ", "_").replace(",", "")
                 for source in config.sources:
                     if source.enabled:
                         try:
@@ -458,7 +483,7 @@ class Worker:
                                 async with self.db_pool.acquire() as conn:
                                     source_id = await self.db_pool.get_or_create_source(
                                         conn, name=source.name, driver=source.driver,
-                                        config=source.params, is_enabled=source.enabled,
+                                        config=source.params, city_id=city_id, is_enabled=source.enabled,
                                         schedule=source.schedule,
                                     )
                                     await self.backfill_manager.initialize_queue_for_source(

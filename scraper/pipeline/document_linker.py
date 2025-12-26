@@ -156,7 +156,23 @@ class DocumentLinker:
             logger.info(f"Date-linked '{doc['title']}' → '{exact_match['title']}'")
             return True
         else:
-            # Needs AI assistance
+            # No good match found - check if this document represents a different meeting type
+            # If so, create a new event for it rather than waiting for AI
+            doc_meeting_type = self._extract_meeting_type(doc["title"])
+            existing_types = {self._extract_meeting_type(e["title"]) for e in events}
+            
+            if doc_meeting_type and doc_meeting_type not in existing_types:
+                # This is a distinct meeting type not represented by existing events
+                event_id = await self._create_event_from_document(conn, doc)
+                if event_id:
+                    await self.db_pool.link_document_to_event(conn, doc["id"], event_id)
+                    await conn.execute("""
+                        UPDATE documents SET linking_status = 'linked', linking_attempts = $2 WHERE id = $1
+                    """, doc["id"], attempts)
+                    logger.info(f"Created new '{doc_meeting_type}' event from '{doc['title']}' (no matching event type on {doc_date})")
+                    return True
+            
+            # Mark as needs_summary for AI assistance
             await conn.execute("""
                 UPDATE documents SET linking_status = 'needs_summary' WHERE id = $1
             """, doc["id"])
@@ -175,7 +191,8 @@ class DocumentLinker:
             "city council", "council", "planning commission", "planning",
             "zoning", "board of zoning", "finance", "finance committee",
             "parks", "recreation", "school board", "board of education",
-            "township", "trustees",
+            "township", "trustees", "caucus", "civil service", "safety committee",
+            "architectural", "environmental", "charter review",
         ]
 
         for e in events:
@@ -192,7 +209,7 @@ class DocumentLinker:
 
             event_words = set(event_title_lower.split())
             doc_words = set(doc_title_lower.split())
-            common = event_words & doc_words - {"meeting", "agenda", "minutes", "the", "of", "and", "for"}
+            common = event_words & doc_words - {"meeting", "agenda", "minutes", "the", "of", "and", "for", "video", "city", "twinsburg"}
             score += len(common) * 2
 
             if score > best_score:

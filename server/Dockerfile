@@ -23,5 +23,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import asyncio; asyncio.run(__import__('main').health_check())" || exit 1
 
-# Run the MCP server
+# Run the MCP server in stdio mode
 CMD ["python", "main.py"]

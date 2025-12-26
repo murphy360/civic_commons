@@ -24,12 +24,14 @@ class ScraperExecutor:
 
     def __init__(self, db_pool, ai_processor=None, document_downloader=None, 
                  queue_manager: QueueManager = None,
-                 activity_logger: Optional["ActivityLogger"] = None):
+                 activity_logger: Optional["ActivityLogger"] = None,
+                 mcp_client=None):
         self.db_pool = db_pool
         self.ai_processor = ai_processor
         self.document_downloader = document_downloader
         self.queue_manager = queue_manager
         self.activity = activity_logger
+        self.mcp_client = mcp_client
 
     async def scrape_source(
         self,
@@ -110,6 +112,7 @@ class ScraperExecutor:
                         documents=documents,
                         city_id=city_id,
                         city_name=config.city_profile.name,
+                        mcp_client=self.mcp_client,
                     )
 
             logger.info(f"Completed scrape: {source.name} - {len(events)} events, {len(documents)} documents")
@@ -136,7 +139,7 @@ class ScraperExecutor:
                 )
             raise
 
-    async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "") -> None:
+    async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "", mcp_client=None) -> None:
         """
         Store scraped results in database.
         
@@ -163,7 +166,7 @@ class ScraperExecutor:
                     event = await self._enrich_event_with_ai(event, city_name)
 
                 event_id = await self.db_pool.upsert_event(
-                    conn, source_id, event, ai_processor=self.ai_processor
+                    conn, source_id, event, ai_processor=self.ai_processor, mcp_client=mcp_client
                 )
                 logger.debug(f"Stored event: {event.title} -> {event_id}")
 

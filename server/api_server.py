@@ -4,6 +4,8 @@ Civic Commons API Server
 FastAPI server providing HTTP endpoints for the web frontend,
 including chat API with Gemini function calling.
 
+All tool calls are logged to the activity_log table for admin visibility.
+
 Usage:
     uvicorn api_server:app --host 0.0.0.0 --port 8080
 
@@ -30,6 +32,7 @@ from pydantic import BaseModel
 from config import get_config, get_city_config
 from db import Database
 from chat import ChatService
+from tool_executor import ToolExecutor
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +46,7 @@ logger = logging.getLogger("civic_commons.api")
 # Global instances
 _db: Database | None = None
 _chat: ChatService | None = None
+_executor: ToolExecutor | None = None
 _city_id: str | None = None
 
 
@@ -71,18 +75,30 @@ async def get_chat() -> ChatService:
     global _chat
     if _chat is None:
         db = await get_db()
-        _chat = ChatService(db)
+        executor = await get_executor()
+        _chat = ChatService(db, executor=executor)
         logger.info("Chat service initialized")
     return _chat
 
 
+async def get_executor() -> ToolExecutor:
+    """Get the tool executor instance."""
+    global _executor
+    if _executor is None:
+        _executor = ToolExecutor()
+    return _executor
+
+
 async def close_services() -> None:
     """Close all service connections."""
-    global _db, _chat
+    global _db, _chat, _executor
     
     if _chat is not None:
         await _chat.close()
         _chat = None
+    
+    if _executor is not None:
+        _executor = None
         
     if _db is not None:
         await _db.close()
@@ -262,7 +278,7 @@ async def get_events(
         city_id=get_default_city_id(),
         start_date=start,
         end_date=end,
-        source_type=source_type,
+        source_name=source_type,
         limit=limit,
     )
     
@@ -300,29 +316,19 @@ async def search_documents(
         limit: Maximum results
     """
     db = await get_db()
+    city_id = get_default_city_id()
     
     results = await db.search_documents(
-        city_id=get_default_city_id(),
+        city_id=city_id,
         query=query,
         source_type=source_type,
         limit=limit,
     )
     
     return {
-        "query": query,
         "total": len(results),
-        "documents": [
-            {
-                "id": r["id"],
-                "title": r["title"],
-                "type": r.get("document_type"),
-                "published_date": r["published_date"].isoformat() if r.get("published_date") else None,
-                "source": r.get("source_name"),
-                "source_url": r.get("source_url"),
-                "relevance": float(r.get("rank", 0)),
-            }
-            for r in results
-        ]
+        "count": len(results),
+        "results": results,
     }
 
 
@@ -335,20 +341,17 @@ async def get_document(document_id: int):
         document_id: The document ID
     """
     db = await get_db()
+    city_id = get_default_city_id()
     
-    doc = await db.get_document_content(document_id)
-    if not doc:
+    result = await db.get_document_content(
+        city_id=city_id,
+        document_id=document_id,
+    )
+    
+    if result:
+        return result
+    else:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    return {
-        "id": doc["id"],
-        "title": doc["title"],
-        "type": doc.get("document_type"),
-        "content": doc.get("content_markdown") or doc.get("content_text"),
-        "source": doc.get("source_name"),
-        "source_url": doc.get("source_url"),
-        "published_date": doc["published_date"].isoformat() if doc.get("published_date") else None,
-    }
 
 
 @app.get("/legislation")
@@ -367,72 +370,10 @@ async def get_legislation(
         search: Search in titles
         limit: Maximum results
     """
-    db = await get_db()
-    
-    query = """
-        SELECT 
-            lm.id,
-            lm.legislation_type,
-            lm.legislation_number,
-            lm.legislation_title,
-            lm.action_taken,
-            lm.vote_result,
-            lm.vote_details,
-            lm.mentioned_date,
-            d.title as document_title,
-            d.id as document_id,
-            e.title as event_title,
-            e.id as event_id,
-            e.start_time as event_date
-        FROM legislation_mentions lm
-        LEFT JOIN documents d ON lm.document_id = d.id
-        LEFT JOIN events e ON lm.event_id = e.id
-        WHERE 1=1
-    """
-    params: list = []
-    
-    if legislation_type:
-        params.append(legislation_type)
-        query += f" AND lm.legislation_type = ${len(params)}"
-    
-    if legislation_number:
-        params.append(f"%{legislation_number}%")
-        query += f" AND lm.legislation_number ILIKE ${len(params)}"
-    
-    if search:
-        params.append(f"%{search}%")
-        query += f" AND lm.legislation_title ILIKE ${len(params)}"
-    
-    query += " ORDER BY lm.mentioned_date DESC NULLS LAST, lm.id DESC"
-    params.append(limit)
-    query += f" LIMIT ${len(params)}"
-    
-    async with db.pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-    
+    # TODO: Implement legislation search in database
     return {
-        "total": len(rows),
-        "legislation": [
-            {
-                "id": r["id"],
-                "type": r["legislation_type"],
-                "number": r["legislation_number"],
-                "title": r["legislation_title"],
-                "action": r["action_taken"],
-                "vote_result": r["vote_result"],
-                "vote_details": dict(r["vote_details"]) if r["vote_details"] else None,
-                "document": {
-                    "id": r["document_id"],
-                    "title": r["document_title"],
-                } if r["document_id"] else None,
-                "event": {
-                    "id": r["event_id"],
-                    "title": r["event_title"],
-                    "date": r["event_date"].isoformat() if r["event_date"] else None,
-                } if r["event_id"] else None,
-            }
-            for r in rows
-        ]
+        "total": 0,
+        "results": [],
     }
 
 

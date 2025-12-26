@@ -32,6 +32,7 @@ class LogCategory(str, Enum):
     EVENT = "event"
     LINKING = "linking"
     SUMMARY = "summary"
+    TOOL_CALL = "tool_call"
 
 
 class ActivityLogger:
@@ -539,3 +540,118 @@ class ActivityLogger:
             city_id=city_id,
             details={"summary_type": summary_type, "error": error},
         )
+
+    # =========================================================================
+    # TOOL CALL EVENTS
+    # =========================================================================
+
+    async def log_tool_started(
+        self,
+        tool_name: str,
+        args: Optional[dict] = None,
+        source: Optional[str] = None,
+        city_id: Optional[str] = None,
+    ) -> None:
+        """Log start of tool execution."""
+        await self.log(
+            LogLevel.INFO,
+            LogCategory.TOOL_CALL,
+            "started",
+            f"Tool execution started: {tool_name}",
+            entity_type="tool_call",
+            city_id=city_id,
+            details={
+                "tool_name": tool_name,
+                "tool_args": self._sanitize_dict(args) if args else {},
+                "source": source,
+            },
+        )
+
+    async def log_tool_completed(
+        self,
+        tool_name: str,
+        args: Optional[dict] = None,
+        result: Optional[Any] = None,
+        execution_time_ms: float = 0,
+        source: Optional[str] = None,
+        city_id: Optional[str] = None,
+    ) -> None:
+        """Log successful tool execution."""
+        await self.log(
+            LogLevel.SUCCESS,
+            LogCategory.TOOL_CALL,
+            "completed",
+            f"Tool executed: {tool_name} ({execution_time_ms:.0f}ms)",
+            entity_type="tool_call",
+            city_id=city_id,
+            details={
+                "tool_name": tool_name,
+                "tool_args": self._sanitize_dict(args) if args else {},
+                "tool_result": self._sanitize_for_storage(result),
+                "execution_time_ms": round(execution_time_ms, 2),
+                "source": source,
+            },
+        )
+
+    async def log_tool_failed(
+        self,
+        tool_name: str,
+        error: str,
+        execution_time_ms: float = 0,
+        source: Optional[str] = None,
+        city_id: Optional[str] = None,
+        args: Optional[dict] = None,
+    ) -> None:
+        """Log tool execution failure."""
+        await self.log(
+            LogLevel.ERROR,
+            LogCategory.TOOL_CALL,
+            "failed",
+            f"Tool failed: {tool_name} - {error[:100]}",
+            entity_type="tool_call",
+            city_id=city_id,
+            details={
+                "tool_name": tool_name,
+                "tool_args": self._sanitize_dict(args) if args else {},
+                "error": error,
+                "execution_time_ms": round(execution_time_ms, 2),
+                "source": source,
+            },
+        )
+
+    # =========================================================================
+    # UTILITY METHODS
+    # =========================================================================
+
+    @staticmethod
+    def _sanitize_dict(data: Optional[dict], max_length: int = 500) -> dict:
+        """Sanitize dictionary for storage, truncating long strings."""
+        if not data:
+            return {}
+        
+        sanitized = {}
+        for key, value in data.items():
+            if isinstance(value, str) and len(value) > max_length:
+                sanitized[key] = f"{value[:max_length]}... [truncated {len(value) - max_length} chars]"
+            elif isinstance(value, (dict, list)):
+                sanitized[key] = ActivityLogger._sanitize_for_storage(value, max_length)
+            else:
+                sanitized[key] = value
+        
+        return sanitized
+
+    @staticmethod
+    def _sanitize_for_storage(data: Any, max_length: int = 1000) -> Any:
+        """Sanitize data for storage, handling nested structures."""
+        if isinstance(data, str):
+            if len(data) > max_length:
+                return f"{data[:max_length]}... [truncated {len(data) - max_length} chars]"
+            return data
+        elif isinstance(data, dict):
+            return {k: ActivityLogger._sanitize_for_storage(v, max_length) for k, v in list(data.items())[:20]}
+        elif isinstance(data, list):
+            return [ActivityLogger._sanitize_for_storage(item, max_length) for item in data[:10]]
+        elif data is None:
+            return None
+        else:
+            return str(data)

@@ -7,8 +7,9 @@ Side effects: Reads/writes to PostgreSQL database
 
 import logging
 import os
+import time
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
@@ -17,6 +18,7 @@ from models import Event, Document
 
 if TYPE_CHECKING:
     from pipeline.ai_processor import AIEventProcessor
+    from pipeline.activity_logger import ActivityLogger
 
 logger = logging.getLogger("civic.storage")
 
@@ -34,18 +36,25 @@ class DatabasePool:
     
     Provides connection pooling for PostgreSQL and common
     CRUD operations for events and documents.
+    
+    Can optionally use MCP client for unified event management,
+    falling back to direct DB if MCP is unavailable.
     """
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(self, pool: asyncpg.Pool, mcp_client=None, activity_logger: Optional["ActivityLogger"] = None):
         self._pool = pool
+        self.mcp_client = mcp_client  # Optional MCP client for write operations
+        self.activity = activity_logger  # Optional activity logger for tracking operations
 
     @classmethod
-    async def create(cls, database_url: str) -> "DatabasePool":
+    async def create(cls, database_url: str, mcp_client=None, activity_logger: Optional["ActivityLogger"] = None) -> "DatabasePool":
         """
         Create a new database pool.
         
         Args:
             database_url: PostgreSQL connection string
+            mcp_client: Optional MCP client for unified event management
+            activity_logger: Optional ActivityLogger for tracking operations
             
         Returns:
             Initialized DatabasePool instance
@@ -57,7 +66,7 @@ class DatabasePool:
             command_timeout=60,
         )
         logger.info("Database pool created")
-        return cls(pool)
+        return cls(pool, mcp_client=mcp_client, activity_logger=activity_logger)
 
     async def close(self) -> None:
         """Close the connection pool."""
@@ -457,9 +466,148 @@ class DatabasePool:
         source_id: int,
         event: Event,
         ai_processor: Optional["AIEventProcessor"] = None,
+        mcp_client: Optional[Any] = None,
     ) -> int:
         """
-        Insert or update an event with intelligent deduplication.
+        Insert or update an event with MCP-powered deduplication (if available).
+        
+        Decision Path (with MCP):
+        1. Call MCP's analyze_event_for_upsert_tool
+        2. Implement decision: create new or merge with recommended event_id
+        3. If MCP unavailable, fall back to local deduplication
+        
+        Args:
+            conn: Database connection
+            source_id: ID of the source
+            event: Event to upsert
+            ai_processor: Optional AI processor for local fallback
+            mcp_client: Optional MCP client for centralized decisions
+        
+        Returns:
+            Event ID (integer)
+        """
+        # Try MCP-based decision first (if available)
+        if mcp_client:
+            decision = await self._get_mcp_event_decision(
+                mcp_client, source_id, event
+            )
+            
+            if decision and "error" not in decision:
+                action = decision.get("action")
+                
+                if action == "create":
+                    # Create new event
+                    event_id = await self.create_event(conn, event)
+                    await self.add_event_source(
+                        conn, event_id, source_id,
+                        external_id=event.external_id,
+                        source_url=event.source_url,
+                    )
+                    logger.info(f"MCP-created event: '{event.title}' -> {event_id}")
+                    return event_id
+                
+                elif action == "merge":
+                    merge_event_id = decision.get("event_id")
+                    confidence = decision.get("confidence", 0)
+                    if merge_event_id:
+                        await self.add_event_source(
+                            conn, merge_event_id, source_id,
+                            external_id=event.external_id,
+                            source_url=event.source_url,
+                        )
+                        logger.info(
+                            f"MCP-merged event '{event.title}' to {merge_event_id} "
+                            f"(confidence: {confidence:.2f})"
+                        )
+                        return merge_event_id
+            
+            # If MCP decision failed or returned error, fall through to local logic
+            logger.warning(
+                f"MCP decision failed or unavailable: {decision}. "
+                f"Falling back to local deduplication."
+            )
+        
+        # Fall back to local deduplication logic
+        return await self._upsert_event_local(
+            conn, source_id, event, ai_processor
+        )
+    
+    async def _get_mcp_event_decision(
+        self, mcp_client: Any, source_id: int, event: Event
+    ) -> dict[str, Any]:
+        """
+        Get event upsert decision from MCP server.
+        
+        Args:
+            mcp_client: MCP client instance
+            source_id: Event source ID
+            event: Event to analyze
+            
+        Returns:
+            Decision dict: {action, event_id, confidence, reasoning, error}
+        """
+        start_time = time.time()
+        try:
+            # Convert event_type enum to string if needed
+            category = event.event_type.value if hasattr(event.event_type, 'value') else str(event.event_type)
+            
+            args = {
+                "source_id": source_id,
+                "title": event.title,
+                "start_time": event.starts_at.isoformat(),
+                "end_time": event.ends_at.isoformat() if event.ends_at else None,
+                "location": event.location,
+                "description": event.description,
+                "category": category,
+                "is_virtual": event.is_virtual,
+                "virtual_url": event.virtual_url,
+                "external_id": event.external_id,
+                "source_url": event.source_url,
+            }
+            
+            decision = await mcp_client.call_tool(
+                "analyze_event_for_upsert_tool",
+                args=args,
+            )
+            
+            # Log the tool call
+            if self.activity:
+                duration_ms = (time.time() - start_time) * 1000
+                await self.activity.log_tool_completed(
+                    tool_name="analyze_event_for_upsert",
+                    args={"title": event.title, "source_id": source_id},
+                    result=decision,
+                    execution_time_ms=duration_ms,
+                    source="mcp",
+                )
+            
+            return decision
+        except Exception as e:
+            logger.error(f"MCP call failed: {e}")
+            
+            # Log the failure
+            if self.activity:
+                duration_ms = (time.time() - start_time) * 1000
+                await self.activity.log_tool_failed(
+                    tool_name="analyze_event_for_upsert",
+                    error=str(e),
+                    execution_time_ms=duration_ms,
+                    source="mcp",
+                )
+            
+            return {"error": str(e)}
+    
+    async def _upsert_event_local(
+        self,
+        conn: asyncpg.Connection,
+        source_id: int,
+        event: Event,
+        ai_processor: Optional["AIEventProcessor"] = None,
+    ) -> int:
+        """
+        Insert or update an event using local deduplication logic.
+        
+        This is the fallback when MCP is unavailable.
         
         Deduplication strategy:
         1. Check if this source+external_id already exists (exact match)

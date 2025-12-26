@@ -82,7 +82,7 @@ services:
       context: ./server
       dockerfile: Dockerfile
     container_name: civic_commons_mcp
-    restart: "no"  # MCP uses stdio transport, runs on-demand
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
