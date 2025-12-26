@@ -26,7 +26,6 @@ from pipeline.ai_processor import AIEventProcessor
 from pipeline.ai import DocumentSummarizer, GeminiClient
 from pipeline.ai.summary import SummaryGenerator, SummaryType, get_period_bounds
 from pipeline.ai.cascade import SummaryCascadeManager
-from pipeline.backfill import BackfillManager
 from pipeline.downloader import DocumentDownloader
 from pipeline.document_linker import DocumentLinker
 from pipeline.ai_queue import AIQueueProcessor
@@ -165,18 +164,8 @@ class Worker:
         )
         logger.info("Queue processor initialized")
 
-        # Initialize backfill manager
-        backfill_months = int(os.getenv("BACKFILL_MONTHS", "12"))
-        backfill_delay = int(os.getenv("BACKFILL_DELAY_SECONDS", "300"))
-        initial_days_back = int(os.getenv("INITIAL_DAYS_BACK", "7"))
-
-        self.backfill_manager = BackfillManager(
-            db_pool=self.db_pool,
-            initial_days_back=initial_days_back,
-            backfill_months=backfill_months,
-            batch_delay_seconds=backfill_delay,
-        )
-        logger.info(f"Backfill manager initialized ({backfill_months} months, {backfill_delay}s delay)")
+        # Backfill manager deprecated - all events processed inline
+        self.backfill_manager = None
 
         # Initialize cascade manager for summary generation
         if self.summary_generator and self.summary_generator.enabled:
@@ -478,28 +467,8 @@ class Worker:
                     if source.enabled:
                         try:
                             await self.scrape_source(config, source, skip_queue_check=True)
-
-                            if self.backfill_manager:
-                                async with self.db_pool.acquire() as conn:
-                                    source_id = await self.db_pool.get_or_create_source(
-                                        conn, name=source.name, driver=source.driver,
-                                        config=source.params, city_id=city_id, is_enabled=source.enabled,
-                                        schedule=source.schedule,
-                                    )
-                                    await self.backfill_manager.initialize_queue_for_source(
-                                        conn, source_id, source.name
-                                    )
                         except Exception as e:
                             logger.error(f"Initial scrape failed for {source.name}: {e}")
-
-        # Start backfill processor
-        if self.backfill_manager:
-            logger.info("Starting backfill processor...")
-            await self.backfill_manager.start_background_processor(
-                scrape_callback=self.scrape_source,
-                configs=configs,
-                ai_queue_check_callback=self.is_ai_queue_busy,
-            )
 
         # Run initial AI queue processing
         if self.doc_summarizer and self.doc_summarizer.enabled:

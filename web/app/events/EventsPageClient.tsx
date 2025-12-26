@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import EventFilters, { type FilterState } from './EventFilters';
+import { prioritizePeriodicSummary } from '../actions/documents';
+import { PeriodSummaryBadge } from '../components/PeriodSummaryBadge';
 
 interface Event {
   id: number;
@@ -460,14 +462,17 @@ function SummaryCard({
   type: 'annual' | 'quarterly' | 'monthly' | 'weekly';
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isPendingAction, startTransition] = useTransition();
+  const [actionStatus, setActionStatus] = useState<'idle' | 'queued' | 'error'>('idle');
   const isPending = summary.status === 'pending' || summary.status === 'generating';
   
   // Consistent colors: purple for completed, grey for pending (like documents)
   const completedColors = { bg: 'bg-purple-50 border-purple-200', badge: 'bg-purple-100 text-purple-800', icon: 'text-purple-600' };
   const pendingColors = { bg: 'bg-gray-50 border-gray-200', badge: 'bg-gray-100 text-gray-600', icon: 'text-gray-400' };
+  const queuedColors = { bg: 'bg-blue-50 border-blue-200', badge: 'bg-blue-100 text-blue-700', icon: 'text-blue-500' };
   const labels = { annual: 'Annual', quarterly: 'Quarterly', monthly: 'Monthly', weekly: 'Weekly' };
   
-  const colors = isPending ? pendingColors : completedColors;
+  const colors = actionStatus === 'queued' ? queuedColors : (isPending ? pendingColors : completedColors);
   const label = labels[type];
   
   // Get first ~200 chars of summary for preview
@@ -486,6 +491,99 @@ function SummaryCard({
       : type === 'monthly'
         ? periodStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
         : `Week of ${periodStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+
+  // Handle clicking the badge to queue for (re)analysis
+  const handleBadgeClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    startTransition(async () => {
+      const result = await prioritizePeriodicSummary({ summaryId: summary.id });
+      if (result.success) {
+        setActionStatus('queued');
+      } else {
+        setActionStatus('error');
+        setTimeout(() => setActionStatus('idle'), 3000);
+      }
+    });
+  };
+
+  // Badge component that's clickable
+  const SummaryBadge = () => {
+    const isGenerating = summary.status === 'generating';
+    
+    // Already queued state
+    if (actionStatus === 'queued') {
+      return (
+        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+          </svg>
+          Queued for Analysis
+        </span>
+      );
+    }
+    
+    // Error state
+    if (actionStatus === 'error') {
+      return (
+        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+          Error
+        </span>
+      );
+    }
+    
+    // Completed summary - clickable to trigger re-analysis
+    if (!isPending) {
+      return (
+        <button
+          onClick={handleBadgeClick}
+          disabled={isPendingAction}
+          className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 hover:bg-purple-200 transition-colors cursor-pointer disabled:opacity-50"
+          title="Click to re-analyze this summary"
+        >
+          {isPendingAction ? (
+            <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          ) : (
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+          )}
+          ✨ AI Summary
+        </button>
+      );
+    }
+    
+    // Pending/generating - clickable to prioritize
+    return (
+      <button
+        onClick={handleBadgeClick}
+        disabled={isPendingAction || isGenerating}
+        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${colors.badge} ${!isGenerating ? 'hover:bg-gray-200 cursor-pointer' : ''} transition-colors disabled:opacity-50`}
+        title={isGenerating ? 'Summary is being generated' : 'Click to prioritize this summary'}
+      >
+        {isPendingAction ? (
+          <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        ) : isGenerating ? (
+          <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        ) : (
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        )}
+        ⏳ Pending Analysis
+      </button>
+    );
+  };
   
   return (
     <div className={`border rounded-lg ${colors.bg} transition-all`}>
@@ -514,9 +612,7 @@ function SummaryCard({
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${colors.badge}`}>
-                {isPending ? '⏳ Pending Summary' : '✨ AI Summary'}
-              </span>
+              <SummaryBadge />
               <span className="text-xs text-muted-foreground">
                 {label} • {periodLabel}
               </span>
@@ -576,8 +672,8 @@ function WeekSection({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   
-  const hasPendingSummary = week.summary && (week.summary.status === 'pending' || week.summary.status === 'generating');
-  const hasCompletedSummary = week.summary && week.summary.status === 'completed';
+  // Get the Monday of this week for period start
+  const periodStart = week.startDate.toISOString().split('T')[0];
   
   return (
     <div className="border-l-2 border-muted pl-4 ml-2">
@@ -597,16 +693,11 @@ function WeekSection({
         <span className="text-xs bg-muted px-2 py-0.5 rounded-full">
           {week.events.length} event{week.events.length !== 1 ? 's' : ''}
         </span>
-        {hasCompletedSummary && (
-          <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">
-            ✨ AI Summary
-          </span>
-        )}
-        {hasPendingSummary && (
-          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-            ⏳ Pending Summary
-          </span>
-        )}
+        <PeriodSummaryBadge 
+          summary={week.summary} 
+          summaryType="weekly" 
+          periodStart={periodStart} 
+        />
       </button>
       
       {isExpanded && (
@@ -635,8 +726,10 @@ function MonthSection({
   onToggle: () => void;
   isPast?: boolean;
 }) {
-  const hasPendingSummary = month.summary && (month.summary.status === 'pending' || month.summary.status === 'generating');
-  const hasCompletedSummary = month.summary && month.summary.status === 'completed';
+  // Get first day of the month for period start
+  const firstEvent = month.events[0];
+  const monthDate = new Date(firstEvent.start_time);
+  const periodStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1).toISOString().split('T')[0];
   
   return (
     <div className="border-l-2 border-muted pl-4 ml-2">
@@ -656,16 +749,11 @@ function MonthSection({
         <span className="text-xs bg-muted px-2 py-0.5 rounded-full">
           {month.events.length} event{month.events.length !== 1 ? 's' : ''}
         </span>
-        {hasCompletedSummary && (
-          <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">
-            ✨ AI Summary
-          </span>
-        )}
-        {hasPendingSummary && (
-          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-            ⏳ Pending Summary
-          </span>
-        )}
+        <PeriodSummaryBadge 
+          summary={month.summary} 
+          summaryType="monthly" 
+          periodStart={periodStart} 
+        />
       </button>
       
       {isExpanded && (
@@ -707,8 +795,9 @@ function QuarterSection({
   toggleMonth: (key: string) => void;
   isPast?: boolean;
 }) {
-  const hasPendingSummary = quarter.summary && (quarter.summary.status === 'pending' || quarter.summary.status === 'generating');
-  const hasCompletedSummary = quarter.summary && quarter.summary.status === 'completed';
+  // Get first day of the quarter for period start
+  const quarterStartMonth = (quarter.quarter - 1) * 3; // 0, 3, 6, or 9
+  const periodStart = new Date(quarter.year, quarterStartMonth, 1).toISOString().split('T')[0];
   
   return (
     <div className="border-l-2 border-muted pl-4 ml-2">
@@ -728,16 +817,11 @@ function QuarterSection({
         <span className="text-xs bg-muted px-2 py-0.5 rounded-full">
           {quarter.events.length} event{quarter.events.length !== 1 ? 's' : ''}
         </span>
-        {hasCompletedSummary && (
-          <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">
-            ✨ AI Summary
-          </span>
-        )}
-        {hasPendingSummary && (
-          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-            ⏳ Pending Summary
-          </span>
-        )}
+        <PeriodSummaryBadge 
+          summary={quarter.summary} 
+          summaryType="quarterly" 
+          periodStart={periodStart} 
+        />
       </button>
       
       {isExpanded && (
@@ -780,8 +864,8 @@ function YearSection({
   toggleMonth: (key: string) => void;
   isPast?: boolean;
 }) {
-  const hasPendingSummary = yearGroup.summary && (yearGroup.summary.status === 'pending' || yearGroup.summary.status === 'generating');
-  const hasCompletedSummary = yearGroup.summary && yearGroup.summary.status === 'completed';
+  // Get first day of the year for period start
+  const periodStart = new Date(yearGroup.year, 0, 1).toISOString().split('T')[0];
   
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -799,16 +883,11 @@ function YearSection({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
           <span className="font-bold text-xl">{yearGroup.year}</span>
-          {hasCompletedSummary && (
-            <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">
-              ✨ AI Summary
-            </span>
-          )}
-          {hasPendingSummary && (
-            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-              ⏳ Pending Summary
-            </span>
-          )}
+          <PeriodSummaryBadge 
+            summary={yearGroup.summary} 
+            summaryType="annual" 
+            periodStart={periodStart} 
+          />
         </div>
         <span className="text-sm text-muted-foreground bg-background px-3 py-1 rounded-full">
           {yearGroup.events.length} event{yearGroup.events.length !== 1 ? 's' : ''}

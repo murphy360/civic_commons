@@ -355,6 +355,12 @@ class DatabasePool:
         """
         now = datetime.utcnow()
         
+        # Handle event_type - could be enum (with .value) or already a string
+        if hasattr(event, 'event_type') and event.event_type:
+            event_type_str = event.event_type.value if hasattr(event.event_type, 'value') else str(event.event_type)
+        else:
+            event_type_str = None
+        
         row = await conn.fetchrow(
             """
             INSERT INTO events (
@@ -370,8 +376,7 @@ class DatabasePool:
             event.starts_at,
             event.ends_at,
             event.location,
-            # Map event_type enum to category string for database
-            event.event_type.value if hasattr(event, 'event_type') and event.event_type else None,
+            event_type_str,
             getattr(event, 'is_cancelled', False),
             getattr(event, 'is_virtual', False),
             getattr(event, 'virtual_url', None),
