@@ -4,6 +4,7 @@ import { sql } from '@/lib/db';
 import { AISummarySection } from './AISummarySection';
 import { ReanalyzeEventButton } from './ReanalyzeEventButton';
 import { Header } from '../../components/Header';
+import { EntityFlair, type EntityInfo } from '../../components/EntityFlair';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,16 @@ interface Event {
   source_count: number;
   ai_summary: string | null;
   ai_summary_updated_at: Date | null;
+  // Entity information
+  entity_key: string | null;
+  entity_display_name: string | null;
+  entity_short_name: string | null;
+  entity_domain: string | null;
+  entity_icon: string | null;
+  // City information
+  city_id: string | null;
+  city_display_name: string | null;
+  city_count: number;
 }
 
 interface EventDocument {
@@ -64,12 +75,23 @@ async function getEvent(id: number): Promise<Event | null> {
         e.ai_summary,
         e.ai_summary_updated_at,
         COALESCE(string_agg(DISTINCT s.name, ', ' ORDER BY s.name), 'Unknown') as source_names,
-        COUNT(DISTINCT es.source_id)::int as source_count
+        COUNT(DISTINCT es.source_id)::int as source_count,
+        COALESCE(ent.entity_key, src_ent.entity_key) as entity_key,
+        COALESCE(ent.display_name, src_ent.display_name) as entity_display_name,
+        COALESCE(ent.short_name, src_ent.short_name) as entity_short_name,
+        COALESCE(ent.domain, src_ent.domain) as entity_domain,
+        COALESCE(ent.icon, src_ent.icon) as entity_icon,
+        (SELECT ec.city_id FROM event_cities ec WHERE ec.event_id = e.id AND ec.is_primary = true LIMIT 1) as city_id,
+        (SELECT c.display_name FROM event_cities ec JOIN cities c ON ec.city_id = c.city_id WHERE ec.event_id = e.id AND ec.is_primary = true LIMIT 1) as city_display_name,
+        (SELECT COUNT(*) FROM event_cities ec WHERE ec.event_id = e.id)::int as city_count
       FROM events e
       LEFT JOIN event_sources es ON e.id = es.event_id
       LEFT JOIN sources s ON es.source_id = s.id
+      LEFT JOIN entities ent ON e.entity_id = ent.id
+      LEFT JOIN entities src_ent ON s.entity_id = src_ent.id
       WHERE e.id = ${id}
-      GROUP BY e.id
+      GROUP BY e.id, ent.entity_key, ent.display_name, ent.short_name, ent.domain, ent.icon,
+               src_ent.entity_key, src_ent.display_name, src_ent.short_name, src_ent.domain, src_ent.icon
     `;
     return events[0] || null;
   } catch (error) {
@@ -186,25 +208,47 @@ function formatTime(date: Date): string {
   });
 }
 
-function getRelationshipLabel(relationship: string): string {
+function getDocumentLabel(docType: string | null, relationship: string): string {
+  // Prefer document_type over relationship for more accurate labeling
   const labels: Record<string, string> = {
     agenda: 'Agenda',
     minutes: 'Minutes',
     packet: 'Meeting Packet',
+    video: 'Video',
+    transcript: 'Transcript',
+    ordinance: 'Ordinance',
+    resolution: 'Resolution',
     attachment: 'Attachment',
     related: 'Related Document',
   };
+  
+  // Use document_type if it provides a meaningful label
+  if (docType && labels[docType]) {
+    return labels[docType];
+  }
+  // Fall back to relationship
   return labels[relationship] || relationship;
 }
 
-function getRelationshipColor(relationship: string): string {
+function getDocumentLabelColor(docType: string | null, relationship: string): string {
+  // Prefer document_type over relationship for color coding
   const colors: Record<string, string> = {
     agenda: 'bg-green-100 text-green-800',
     minutes: 'bg-blue-100 text-blue-800',
     packet: 'bg-purple-100 text-purple-800',
+    video: 'bg-red-100 text-red-800',
+    transcript: 'bg-yellow-100 text-yellow-800',
+    ordinance: 'bg-orange-100 text-orange-800',
+    resolution: 'bg-amber-100 text-amber-800',
     attachment: 'bg-gray-100 text-gray-800',
     related: 'bg-gray-100 text-gray-800',
   };
+  
+  // Use document_type if it provides a meaningful color
+  if (docType && colors[docType]) {
+    return colors[docType];
+  }
+  // Fall back to relationship
   return colors[relationship] || 'bg-gray-100 text-gray-800';
 }
 
@@ -250,7 +294,31 @@ export default async function EventDetailPage({
         {/* Event Header */}
         <div className="mb-8">
           <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {event.source_names.split(', ').map((source, idx) => (
+            {/* City badge */}
+            {event.city_display_name && (
+              <span 
+                className="text-sm font-medium px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200"
+                title={event.city_count > 1 ? `Also in ${event.city_count - 1} other ${event.city_count === 2 ? 'city' : 'cities'}` : undefined}
+              >
+                📍 {event.city_display_name}{event.city_count > 1 ? ` +${event.city_count - 1}` : ''}
+              </span>
+            )}
+            {/* Entity badge */}
+            {event.entity_display_name && (
+              <EntityFlair 
+                entity={{
+                  entity_key: event.entity_key || undefined,
+                  entity_display_name: event.entity_display_name || undefined,
+                  entity_short_name: event.entity_short_name || undefined,
+                  entity_domain: event.entity_domain || undefined,
+                  entity_icon: event.entity_icon || undefined,
+                }} 
+                size="md" 
+                showIcon={true} 
+              />
+            )}
+            {/* Fall back to source names if no entity */}
+            {!event.entity_display_name && event.source_names.split(', ').map((source, idx) => (
               <span 
                 key={idx}
                 className="text-sm font-medium px-3 py-1 rounded-full bg-primary/10 text-primary"
@@ -357,8 +425,8 @@ export default async function EventDetailPage({
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className={`text-xs font-medium px-2 py-1 rounded-full ${getRelationshipColor(doc.relationship)}`}>
-                          {getRelationshipLabel(doc.relationship)}
+                        <span className={`text-xs font-medium px-2 py-1 rounded-full ${getDocumentLabelColor(doc.document_type, doc.relationship)}`}>
+                          {getDocumentLabel(doc.document_type, doc.relationship)}
                         </span>
                         {doc.published_date && (
                           <span className="text-xs text-muted-foreground">
