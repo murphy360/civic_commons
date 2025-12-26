@@ -19,12 +19,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from db import Database
-from tool_executor import ToolExecutor
-from tool_registry import get_tool_definitions, list_tools
-from config import get_config
-from event_tools import analyze_event_for_upsert
-from cascade_tools import trigger_cascade_for_document
+from ..shared.db import Database
+from .tool_executor import ToolExecutor
+from .tool_registry import get_tool_definitions, list_tools
+from ..shared.config import get_config
+from .event_tools import analyze_event_for_upsert
+from .cascade_tools import trigger_cascade_for_document
 
 
 logger = logging.getLogger("civic_commons.sse_mcp")
@@ -102,7 +102,7 @@ async def get_ai_processor() -> Optional[object]:
             # Lazy import from scraper only when needed
             import sys
             from pathlib import Path
-            scraper_path = str(Path(__file__).parent.parent / "scraper")
+            scraper_path = str(Path(__file__).parent.parent.parent.parent / "scraper")
             if scraper_path not in sys.path:
                 sys.path.insert(0, scraper_path)
                 
@@ -126,7 +126,7 @@ async def get_doc_summarizer() -> Optional[object]:
             # Lazy import from scraper only when needed
             import sys
             from pathlib import Path
-            scraper_path = str(Path(__file__).parent.parent / "scraper")
+            scraper_path = str(Path(__file__).parent.parent.parent.parent / "scraper")
             if scraper_path not in sys.path:
                 sys.path.insert(0, scraper_path)
                 
@@ -151,7 +151,7 @@ async def get_summary_generator() -> Optional[object]:
             # Lazy import from scraper only when needed
             import sys
             from pathlib import Path
-            scraper_path = str(Path(__file__).parent.parent / "scraper")
+            scraper_path = str(Path(__file__).parent.parent.parent.parent / "scraper")
             if scraper_path not in sys.path:
                 sys.path.insert(0, scraper_path)
                 
@@ -406,3 +406,4 @@ if __name__ == "__main__":
         port=port,
         log_level="info",
     )
+

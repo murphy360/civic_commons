@@ -153,7 +153,8 @@ class Worker:
     async def shutdown(self) -> None:
         """Gracefully shutdown the worker."""
         logger.info("Shutting down worker...")
-        self.scheduler.shutdown(wait=False)
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
         if self.db_pool:
             await self.db_pool.close()
         self._shutdown_event.set()
@@ -343,7 +344,7 @@ class Worker:
         """
         pass
 
-(self, configs: list) -> None:
+    async def _initialize_database(self, configs: list) -> None:
         """Initialize all cities, entities, and sources in the database from config."""
         async with self.db_pool.acquire() as conn:
             for config in configs:
@@ -407,7 +408,7 @@ class Worker:
         logger.info(f"Loaded {len(configs)} city configuration(s)")
 
         # Initialize sources in database
-        await self._initialize_all_sources(configs)
+        await self._initialize_database(configs)
 
         # Schedule jobs
         self.schedule_sources(configs)
@@ -454,3 +455,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

@@ -43,11 +43,11 @@ services:
   # ===========================================================================
   # Scraper/Worker Service
   # ===========================================================================
-  commons-worker:
+  commons-scraper:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
-    container_name: civic_commons_worker
+      context: ./server
+      dockerfile: workers/scraper/Dockerfile
+    container_name: civic_commons_scraper
     restart: unless-stopped
     depends_on:
       db:
@@ -78,12 +78,12 @@ services:
       - civic_network
 
   # ===========================================================================
-  # MCP Server (stdio transport for direct LLM access)
+  # MCP Service (Tool hosting via HTTP/SSE)
   # ===========================================================================
   commons-mcp:
     build:
       context: ./server
-      dockerfile: Dockerfile
+      dockerfile: services/mcp/Dockerfile
     container_name: civic_commons_mcp
     restart: unless-stopped
     depends_on:
@@ -95,7 +95,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
       MCP_API_KEY: ${MCP_API_KEY:?MCP_API_KEY is required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    command: uvicorn sse_server:app --host 0.0.0.0 --port 8000 --log-level info
+    command: uvicorn services.mcp.sse_server:app --host 0.0.0.0 --port 8000 --log-level info
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 10s
@@ -106,12 +106,33 @@ services:
       - civic_network
 
   # ===========================================================================
-  # API Server (HTTP for web frontend chat)
+  # Cascade Service (Background worker for summary regeneration)
+  # ===========================================================================
+  commons-cascade:
+    build:
+      context: ./server
+      dockerfile: workers/cascade/Dockerfile
+    container_name: civic_commons_cascade
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      commons-mcp:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
+      MCP_URL: http://commons-mcp:8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - civic_network
+
+  # ===========================================================================
+  # API Service (HTTP for web frontend chat)
   # ===========================================================================
   commons-api:
     build:
       context: ./server
-      dockerfile: Dockerfile.api
+      dockerfile: services/api/Dockerfile
     container_name: civic_commons_api
     restart: unless-stopped
     depends_on:

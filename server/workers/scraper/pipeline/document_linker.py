@@ -406,3 +406,4 @@ class DocumentLinker:
                     WHERE id = $1
                 """, doc["id"], attempts)
             return False
+

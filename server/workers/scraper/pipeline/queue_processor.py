@@ -536,3 +536,4 @@ class QueueProcessor:
                 return status.get('total_pending', 0) > 10
         except Exception:
             return False
+

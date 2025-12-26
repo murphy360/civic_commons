@@ -113,8 +113,9 @@ export async function GET() {
         else if (row.status === 'completed') backfillStatus.completed = row.count;
         else if (row.status === 'failed') backfillStatus.failed = row.count;
       }
-    } catch {
-      // Table might not exist yet
+    } catch (error) {
+      // Log the error for debugging (backfill_queue table may not exist or have issues)
+      console.warn(`Failed to fetch backfill queue status: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     // Get individual source statuses

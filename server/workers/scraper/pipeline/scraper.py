@@ -386,3 +386,4 @@ class ScraperExecutor:
 
             except Exception as e:
                 logger.warning(f"AI document linking failed for '{document.title}': {e}")
+
