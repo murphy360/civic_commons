@@ -33,16 +33,9 @@ class DocumentLinker:
         return result or 0
 
     async def get_ai_linkable_count(self, conn) -> int:
-        """Count documents that need AI linking (have summary but not date-linked)."""
-        result = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM documents d
-            LEFT JOIN event_documents ed ON d.id = ed.document_id
-            WHERE ed.document_id IS NULL
-              AND (d.linking_status IS NULL OR d.linking_status IN ('pending', 'needs_summary'))
-              AND d.ai_summary IS NOT NULL AND d.ai_summary != ''
-        """)
-        return result or 0
+        """Count documents that need AI linking - now handled by MCP service."""
+        # AI linking has been moved to MCP service
+        return 0
 
     async def process_date_based_linking(self, conn) -> int:
         """

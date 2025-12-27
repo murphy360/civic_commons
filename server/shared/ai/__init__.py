@@ -1,7 +1,7 @@
 """
-AI processing modules for civic event data.
+Shared AI processing modules for civic event data.
 
-This package provides AI-powered processing capabilities:
+This package provides AI-powered processing capabilities used by multiple services:
 - GeminiClient: HTTP client for Gemini API
 - extract_pdf_text: PDF text extraction utility
 - DocumentLinker: Intelligent document-to-event matching
@@ -9,7 +9,9 @@ This package provides AI-powered processing capabilities:
 - EventSummarizer: AI-generated event summaries
 - SummaryGenerator: Cascading AI summaries (event → daily → weekly → etc.)
 - SummaryCascadeManager: Manages cascade updates when documents change
-- AIEventProcessor: Main facade for all AI operations (in parent module)
+
+Note: AIEventProcessor (the main facade) remains in scraper/pipeline as it has
+scraper-specific dependencies.
 """
 
 from .client import GeminiClient, get_gemini_client

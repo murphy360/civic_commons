@@ -92,7 +92,7 @@ async def get_executor() -> ToolExecutor:
 
 
 async def get_ai_processor() -> Optional[object]:
-    """Get or initialize the AI processor (lazily loaded from scraper)."""
+    """Get or initialize the AI processor."""
     global _ai_processor
     if _ai_processor is None:
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
@@ -101,23 +101,39 @@ async def get_ai_processor() -> Optional[object]:
             return None
             
         try:
-            # Lazy import from scraper only when needed
-            import sys
-            from pathlib import Path
-            scraper_path = str(Path(__file__).parent.parent.parent.parent / "scraper")
-            if scraper_path not in sys.path:
-                sys.path.insert(0, scraper_path)
-                
-            from pipeline.ai_processor import AIEventProcessor
-            _ai_processor = AIEventProcessor(api_key=gemini_key)
+            # Import from shared.ai
+            from ..shared.ai import GeminiClient, DocumentLinker, EventSummarizer
+            gemini_client = GeminiClient(api_key=gemini_key)
+            # Create a simple AI processor wrapper with the key capabilities
+            _ai_processor = _AIProcessorWrapper(gemini_client)
             logger.info("AI processor initialized")
         except (ImportError, Exception) as e:
             logger.warning(f"Could not initialize AI processor: {e}")
     return _ai_processor
 
 
+class _AIProcessorWrapper:
+    """Simple wrapper providing AI processor capabilities from shared modules."""
+    
+    def __init__(self, gemini_client):
+        from ..shared.ai import DocumentLinker, EventSummarizer
+        self._gemini = gemini_client
+        self._linker = DocumentLinker(self._gemini)
+        self._summarizer = EventSummarizer(self._gemini)
+    
+    @property
+    def enabled(self) -> bool:
+        return self._gemini.enabled
+    
+    async def find_related_events(self, **kwargs):
+        return await self._linker.find_related_events(**kwargs)
+    
+    async def generate_event_summary(self, **kwargs):
+        return await self._summarizer.generate_event_summary(**kwargs)
+
+
 async def get_doc_summarizer() -> Optional[object]:
-    """Get or initialize the document summarizer (lazily loaded from scraper)."""
+    """Get or initialize the document summarizer."""
     global _doc_summarizer
     if _doc_summarizer is None:
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
@@ -125,13 +141,8 @@ async def get_doc_summarizer() -> Optional[object]:
             return None
             
         try:
-            # Lazy import from scraper pipeline - path is /app/workers/scraper
-            import sys
-            scraper_path = "/app/workers/scraper"
-            if scraper_path not in sys.path:
-                sys.path.insert(0, scraper_path)
-                
-            from pipeline.ai import DocumentSummarizer, GeminiClient
+            # Import from shared.ai (available in MCP container)
+            from ..shared.ai import DocumentSummarizer, GeminiClient
             gemini_client = GeminiClient(api_key=gemini_key)
             _doc_summarizer = DocumentSummarizer(gemini_client)
             logger.info("Document summarizer initialized")
@@ -141,7 +152,7 @@ async def get_doc_summarizer() -> Optional[object]:
 
 
 async def get_summary_generator() -> Optional[object]:
-    """Get or initialize the summary generator (lazily loaded from scraper)."""
+    """Get or initialize the summary generator."""
     global _summary_generator
     if _summary_generator is None:
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
@@ -149,19 +160,14 @@ async def get_summary_generator() -> Optional[object]:
             return None
             
         try:
-            # Lazy import from scraper pipeline - path is /app/workers/scraper
-            import sys
-            scraper_path = "/app/workers/scraper"
-            if scraper_path not in sys.path:
-                sys.path.insert(0, scraper_path)
-                
-            from pipeline.ai.summary import SummaryGenerator
-            from pipeline.ai import GeminiClient
+            # Import from shared.ai
+            from ..shared.ai import SummaryGenerator, GeminiClient
             gemini_client = GeminiClient(api_key=gemini_key)
             _summary_generator = SummaryGenerator(gemini_client)
             logger.info("Summary generator initialized")
         except (ImportError, Exception) as e:
             logger.warning(f"Could not initialize summary generator: {e}")
+    return _summary_generator
     return _summary_generator
 
 
@@ -933,7 +939,12 @@ async def generate_period_summary_endpoint(request: Request):
             if not summary_record:
                 raise HTTPException(status_code=404, detail=f"Summary {summary_id} not found")
             
-            # Get events in period
+            # Get city name from config
+            from ..shared.config import get_city_config
+            city_config = get_city_config()
+            city_name = city_config.get("city_profile", {}).get("name", "Community")
+            
+            # Get events in period with their summaries
             events = await conn.fetch("""
                 SELECT id, title, start_time, ai_summary
                 FROM events
@@ -949,20 +960,51 @@ async def generate_period_summary_endpoint(request: Request):
                     "error": "No summarized events in this period",
                 }
             
+            # Build child_summaries from events
+            child_summaries = [
+                {
+                    "title": e['title'],
+                    "date": e['start_time'].isoformat() if e['start_time'] else None,
+                    "summary": e['ai_summary'],
+                }
+                for e in events if e['ai_summary']
+            ]
+            
+            # Import SummaryType enum from shared
+            from ..shared.ai.summary import SummaryType
+            
+            # Map string to enum
+            type_map = {
+                "daily": SummaryType.DAILY,
+                "weekly": SummaryType.WEEKLY,
+                "monthly": SummaryType.MONTHLY,
+                "annual": SummaryType.ANNUAL,
+            }
+            summary_type_enum = type_map.get(summary_type, SummaryType.WEEKLY)
+            
             # Generate period summary
-            content = await generator.generate_period_summary(
-                events=events,
-                summary_type=summary_type,
+            result = await generator.generate_period_summary(
+                summary_type=summary_type_enum,
                 period_start=summary_record['period_start'],
                 period_end=summary_record['period_end'],
+                city_name=city_name,
+                child_summaries=child_summaries,
+                events=[dict(e) for e in events],
             )
+            
+            if not result or not result.content:
+                return {
+                    "success": False,
+                    "summary_id": summary_id,
+                    "error": "Failed to generate summary content",
+                }
             
             # Update summary record
             await conn.execute("""
                 UPDATE summaries 
                 SET content = $1, status = 'published', generated_at = NOW(), updated_at = NOW()
                 WHERE id = $2
-            """, content, summary_id)
+            """, result.content, summary_id)
         
         return {
             "success": True,

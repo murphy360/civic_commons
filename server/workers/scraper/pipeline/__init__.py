@@ -1,15 +1,13 @@
 """
 Purpose: Export pipeline components
 Dependencies: None
-Consumed by: main.py, drivers
+Consumed by: main.py
 Side effects: None
 """
 
 from .storage import DatabasePool
-from .pdf import PdfProcessor
 
 __all__ = [
     "DatabasePool",
-    "PdfProcessor",
 ]
 

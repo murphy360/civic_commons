@@ -315,69 +315,12 @@ class ScraperExecutor:
         
         return doc_id
 
-        await self.db_pool.update_source_health(conn, source_id, success=True)
-        logger.info(f"Completed storing results for {source.name}: {len(events)} events, {len(documents)} documents")
-
     async def link_documents_to_events(self, conn, documents: list[tuple[int, Document]]) -> None:
-        """Use AI to link standalone documents to events."""
-        # Note: AI linking now happens on the server via AI queue
-        # This method is kept for backward compatibility but does nothing
+        """
+        Link standalone documents to events.
+        
+        Note: AI-based linking is now handled by the cascade service.
+        This method is kept for backward compatibility but does nothing.
+        """
         pass
-
-        events = await conn.fetch("""
-            SELECT id, title, start_time, description
-            FROM events
-            WHERE start_time >= $1 AND start_time <= $2
-            ORDER BY start_time
-        """, past_cutoff, future_cutoff)
-
-        if not events:
-            return
-
-        events_list = [
-            {
-                'id': e['id'],
-                'title': e['title'],
-                'start_time': e['start_time'].isoformat() if e['start_time'] else 'Unknown',
-                'description': e['description']
-            }
-            for e in events
-        ]
-
-        for doc_id, document in documents:
-            try:
-                doc_date = None
-                if hasattr(document, 'meeting_date') and document.meeting_date:
-                    doc_date = document.meeting_date.strftime('%Y-%m-%d')
-                elif hasattr(document, 'published_at') and document.published_at:
-                    doc_date = document.published_at.strftime('%Y-%m-%d')
-
-                local_path = getattr(document, 'file_path', None)
-                doc_content = getattr(document, 'content_markdown', None)
-
-                doc_type_str = None
-                if hasattr(document, 'doc_type') and document.doc_type:
-                    doc_type_str = str(document.doc_type.value) if hasattr(document.doc_type, 'value') else str(document.doc_type)
-
-                matches = await self.ai_processor.find_related_events(
-                    document_title=document.title,
-                    document_content=doc_content,
-                    events=events_list,
-                    document_date=doc_date,
-                    document_type=doc_type_str,
-                    local_path=local_path,
-                )
-
-                for match in matches:
-                    await conn.execute("""
-                        INSERT INTO event_documents (event_id, document_id, relationship)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (event_id, document_id) DO NOTHING
-                    """, match['event_id'], doc_id, match.get('relationship', 'attachment'))
-
-                if matches:
-                    logger.info(f"AI linked document '{document.title}' to {len(matches)} events")
-
-            except Exception as e:
-                logger.warning(f"AI document linking failed for '{document.title}': {e}")
 
