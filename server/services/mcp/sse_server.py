@@ -22,7 +22,7 @@ from pydantic import BaseModel
 # shared is copied to services/shared by Dockerfile
 from ..shared.db import Database
 from ..shared.config import get_config
-from ..shared.activity_log import log_service_started, log_service_stopped
+from ..shared.activity_log_http import log_service_started, log_service_stopped
 from .tool_executor import ToolExecutor
 from .tool_registry import get_tool_definitions, list_tools
 from .event_tools import analyze_event_for_upsert
@@ -204,8 +204,8 @@ async def startup_event():
         logger.info("MCP SERVICE STARTED - Tool server ready")
         logger.info("=" * 60)
         
-        # Log startup to activity_log for admin visibility
-        await log_service_started(db.pool, "MCP SERVICE")
+        # Log startup to activity_log for admin visibility (via HTTP API)
+        await log_service_started("MCP SERVICE")
     except Exception as e:
         logger.error(f"Failed to start server: {e}", exc_info=True)
         raise
@@ -216,10 +216,9 @@ async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down MCP server")
     try:
-        db = await get_db()
-        await log_service_stopped(db.pool, "MCP SERVICE")
+        await log_service_stopped("MCP SERVICE")
     except Exception:
-        pass  # DB may already be closed
+        pass  # API may not be reachable
     await close_db()
 
 

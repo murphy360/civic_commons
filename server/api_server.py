@@ -33,6 +33,7 @@ from config import get_config, get_city_config
 from db import Database
 from chat import ChatService
 from tool_executor import ToolExecutor
+from activity_api import router as activity_router, set_db_pool
 
 # Configure logging
 logging.basicConfig(
@@ -113,8 +114,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting Civic Commons API Server")
     
     # Initialize services
-    await get_db()
+    db = await get_db()
     await get_chat()
+    
+    # Inject db pool into activity logging router
+    set_db_pool(db.pool)
     
     logger.info("API server ready")
     
@@ -142,6 +146,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include internal activity logging router
+app.include_router(activity_router)
 
 
 # ============================================================================

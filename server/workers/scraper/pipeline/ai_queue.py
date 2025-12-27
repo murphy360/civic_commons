@@ -10,7 +10,7 @@ import os
 from typing import Optional, Callable, Awaitable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pipeline.activity_logger import ActivityLogger
+    from pipeline.activity_logger_http import ActivityLoggerHTTP as ActivityLogger
 
 logger = logging.getLogger("civic.ai_queue")
 

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pipeline.activity_logger import ActivityLogger
+    from pipeline.activity_logger_http import ActivityLoggerHTTP as ActivityLogger
 
 from models import Document, Event
 from .queue_manager import QueueManager, ContentStatus

@@ -26,7 +26,7 @@ from pipeline.downloader import DocumentDownloader
 from pipeline.scraper import ScraperExecutor
 from pipeline.queue_manager import QueueManager
 from pipeline.queue_processor import QueueProcessor
-from pipeline.activity_logger import ActivityLogger, LogLevel, LogCategory
+from pipeline.activity_logger_http import ActivityLoggerHTTP as ActivityLogger, LogLevel, LogCategory
 
 # Configure logging
 logging.basicConfig(
@@ -74,23 +74,17 @@ class Worker:
         """Initialize database connection pool and processors."""
         logger.info("Initializing database connection pool...")
         
-        # Initialize activity logger first (needed for DatabasePool)
-        # Create a temporary pool just for the activity logger
-        import asyncpg
-        temp_pool = await asyncpg.create_pool(
-            self.settings.get_database_url(),
-            min_size=2,
-            max_size=5,
-        )
-        self.activity_logger = ActivityLogger(temp_pool)
+        # Initialize HTTP-based activity logger (uses centralized API)
+        self.activity_logger = ActivityLogger()
+        await self.activity_logger.log_system_started()
+        logger.info("Activity logger initialized (HTTP client)")
         
         # Now create DatabasePool with activity logger
         self.db_pool = await DatabasePool.create(
             self.settings.get_database_url(),
             activity_logger=self.activity_logger
         )
-        await self.activity_logger.log_system_started()
-        logger.info("Activity logger initialized")
+        logger.info("Database pool initialized")
 
         # Initialize MCP client for unified event management
         try:

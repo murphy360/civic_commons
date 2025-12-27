@@ -54,9 +54,12 @@ services:
         condition: service_healthy
       commons-mcp:
         condition: service_healthy
+      commons-api:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
       MCP_URL: http://commons-mcp:8000
+      INTERNAL_API_URL: http://commons-api:8080
       CONFIG_DIR: /app/configs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SCRAPER_INTERVAL: ${SCRAPER_INTERVAL:-3600}
@@ -89,12 +92,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      commons-api:
+        condition: service_healthy
     ports:
       - "${MCP_PORT:-8000}:8000"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
       MCP_API_KEY: ${MCP_API_KEY:?MCP_API_KEY is required}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      INTERNAL_API_URL: http://commons-api:8080
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     command: uvicorn services.mcp.sse_server:app --host 0.0.0.0 --port 8000 --log-level info
     healthcheck:
@@ -120,9 +126,12 @@ services:
         condition: service_healthy
       commons-mcp:
         condition: service_healthy
+      commons-api:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
       MCP_URL: http://commons-mcp:8000
+      INTERNAL_API_URL: http://commons-api:8080
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AI_BATCH_SIZE: ${AI_BATCH_SIZE:-1}
       AI_INTERVAL_SECONDS: ${AI_INTERVAL_SECONDS:-30}
@@ -185,6 +194,7 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET is required}
       NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Civic Commons}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      INTERNAL_API_URL: http://commons-api:8080
       DOCUMENT_STORAGE_DIR: /data/documents
     volumes:
       - scraper_data:/data:ro
@@ -220,6 +230,7 @@ services:
       AI_QUEUE_INTERVAL_SECONDS: ${AI_QUEUE_INTERVAL_SECONDS:-30}
       AI_QUEUE_BATCH_SIZE: ${AI_QUEUE_BATCH_SIZE:-1}
       AI_SUMMARY_MAX_AGE_DAYS: ${AI_SUMMARY_MAX_AGE_DAYS:-0}
+      INTERNAL_API_URL: http://commons-api:8080
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3001/api/health"]
       interval: 30s

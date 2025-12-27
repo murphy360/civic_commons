@@ -2,6 +2,7 @@
 
 import { sql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
+import { logActivity } from '@/lib/activityLogger';
 
 export async function reprocessDocument(documentId: number): Promise<{ success: boolean; message: string }> {
   try {
@@ -80,12 +81,24 @@ export async function prioritizePeriodicSummary(
             generation_triggered_by = 'manual',
             error_message = NULL
         WHERE id = ${options.summaryId}
-        RETURNING id, summary_type
+        RETURNING id, summary_type, period_start
       `;
       
       if (result.length === 0) {
         return { success: false, message: 'Summary not found' };
       }
+      
+      // Log the activity via centralized logger
+      await logActivity({
+        level: 'info',
+        category: 'ai',
+        action: 'summary_queued',
+        message: `Manual re-analysis requested for ${result[0].summary_type} summary`,
+        entityType: 'summary',
+        entityId: result[0].id,
+        entityTitle: `${result[0].summary_type} summary`,
+        cityId: 'twinsburg_oh',
+      });
       
       revalidatePath('/events');
       revalidatePath('/newsletters');
@@ -148,6 +161,18 @@ export async function prioritizePeriodicSummary(
           WHERE id = ${existing[0].id}
         `;
         
+        // Log the activity via centralized logger
+        await logActivity({
+          level: 'info',
+          category: 'ai',
+          action: 'summary_queued',
+          message: `Manual re-analysis requested for ${summaryType} summary (period: ${periodStart})`,
+          entityType: 'summary',
+          entityId: existing[0].id,
+          entityTitle: `${summaryType} summary`,
+          cityId: 'twinsburg_oh',
+        });
+        
         revalidatePath('/events');
         revalidatePath('/newsletters');
         
@@ -173,6 +198,18 @@ export async function prioritizePeriodicSummary(
         )
         RETURNING id
       `;
+      
+      // Log the activity via centralized logger
+      await logActivity({
+        level: 'info',
+        category: 'ai',
+        action: 'summary_created',
+        message: `New ${summaryType} summary created and queued for generation (period: ${periodStart})`,
+        entityType: 'summary',
+        entityId: result[0].id,
+        entityTitle: `${summaryType} summary`,
+        cityId: 'twinsburg_oh',
+      });
       
       revalidatePath('/events');
       revalidatePath('/newsletters');

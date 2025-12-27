@@ -34,6 +34,7 @@ from ..shared.config import get_config, get_city_config
 from ..shared.db import Database
 from ..shared.db_init import initialize_database
 from ..shared.activity_log import log_service_started, log_service_stopped
+from ..shared.activity_api import router as activity_router, set_db_pool
 from .chat import ChatService
 from ..mcp.tool_executor import ToolExecutor
 
@@ -119,6 +120,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     db = await get_db()
     await initialize_database(db.pool)
     
+    # Inject db pool into activity logging router
+    set_db_pool(db.pool)
+    
     # Initialize remaining services
     await get_chat()
     
@@ -155,6 +159,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include internal activity logging router
+app.include_router(activity_router)
 
 
 # ============================================================================

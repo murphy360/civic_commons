@@ -18,7 +18,7 @@ from models import Event, Document
 
 if TYPE_CHECKING:
     from pipeline.ai_processor import AIEventProcessor
-    from pipeline.activity_logger import ActivityLogger
+    from pipeline.activity_logger_http import ActivityLoggerHTTP as ActivityLogger
 
 logger = logging.getLogger("civic.storage")
 

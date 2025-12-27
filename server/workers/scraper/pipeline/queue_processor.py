@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pipeline.activity_logger import ActivityLogger
+    from pipeline.activity_logger_http import ActivityLoggerHTTP as ActivityLogger
 
 logger = logging.getLogger("civic.queue_processor")
 

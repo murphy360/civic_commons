@@ -20,6 +20,9 @@ import httpx
 
 logger = logging.getLogger("civic_commons.cascade_service")
 
+# Internal API URL for centralized activity logging
+INTERNAL_API_URL = os.getenv("INTERNAL_API_URL", "http://commons-api:8080")
+
 
 class CascadeService:
     """
@@ -40,6 +43,7 @@ class CascadeService:
         self.mcp_url = mcp_url.rstrip("/")
         self.db_url = db_url or os.getenv("DATABASE_URL")
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._activity_client: Optional[httpx.AsyncClient] = None
         self._db_pool: Optional[asyncpg.Pool] = None
         self._running = False
         
@@ -52,12 +56,14 @@ class CascadeService:
         """Start the cascade service."""
         # Videos can take 10-15+ minutes to process through Gemini for long council meetings
         self._http_client = httpx.AsyncClient(timeout=900.0)  # 15 min for long videos
+        self._activity_client = httpx.AsyncClient(timeout=10.0)  # Short timeout for logging
         self._db_pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
         self._running = True
         
         logger.info("=" * 60)
         logger.info(f"CASCADE SERVICE STARTED")
         logger.info(f"  MCP Server: {self.mcp_url}")
+        logger.info(f"  Activity API: {INTERNAL_API_URL}")
         logger.info(f"  AI Batch Size: {self.ai_batch_size}")
         logger.info(f"  AI Interval: {self.ai_interval_seconds}s")
         logger.info(f"  Max Age: {self.max_age_days} days")
@@ -83,6 +89,8 @@ class CascadeService:
         
         if self._http_client:
             await self._http_client.aclose()
+        if self._activity_client:
+            await self._activity_client.aclose()
         if self._db_pool:
             await self._db_pool.close()
         logger.info("Cascade service stopped")
@@ -92,18 +100,29 @@ class CascadeService:
         entity_type: str = None, entity_id: int = None, entity_title: str = None,
         details: dict = None
     ) -> None:
-        """Log activity to database for admin visibility."""
-        if not self._db_pool:
+        """Log activity via centralized API."""
+        if not self._activity_client:
             return
         try:
-            import json
-            async with self._db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO activity_log 
-                    (level, category, action, message, entity_type, entity_id, entity_title, details)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """, level, category, action, message, entity_type, entity_id, entity_title,
-                     json.dumps(details) if details else None)
+            payload = {
+                "level": level,
+                "category": category,
+                "action": action,
+                "message": message,
+            }
+            if entity_type:
+                payload["entity_type"] = entity_type
+            if entity_id is not None:
+                payload["entity_id"] = entity_id
+            if entity_title:
+                payload["entity_title"] = entity_title
+            if details:
+                payload["details"] = details
+            
+            await self._activity_client.post(
+                f"{INTERNAL_API_URL}/internal/log",
+                json=payload,
+            )
         except Exception as e:
             logger.warning(f"Failed to log activity: {e}")
     
