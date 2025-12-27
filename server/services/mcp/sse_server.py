@@ -15,8 +15,8 @@ import os
 import uuid
 from typing import AsyncGenerator, Optional
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 # shared is copied to services/shared by Dockerfile
@@ -125,10 +125,9 @@ async def get_doc_summarizer() -> Optional[object]:
             return None
             
         try:
-            # Lazy import from scraper only when needed
+            # Lazy import from scraper pipeline - path is /app/workers/scraper
             import sys
-            from pathlib import Path
-            scraper_path = str(Path(__file__).parent.parent.parent.parent / "scraper")
+            scraper_path = "/app/workers/scraper"
             if scraper_path not in sys.path:
                 sys.path.insert(0, scraper_path)
                 
@@ -150,10 +149,9 @@ async def get_summary_generator() -> Optional[object]:
             return None
             
         try:
-            # Lazy import from scraper only when needed
+            # Lazy import from scraper pipeline - path is /app/workers/scraper
             import sys
-            from pathlib import Path
-            scraper_path = str(Path(__file__).parent.parent.parent.parent / "scraper")
+            scraper_path = "/app/workers/scraper"
             if scraper_path not in sys.path:
                 sys.path.insert(0, scraper_path)
                 
@@ -395,6 +393,554 @@ async def trigger_cascade_endpoint(
         return result
     except Exception as e:
         logger.exception(f"Error triggering cascade for document {document_id}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Async AI Processing Endpoints (fire-and-forget from cascade)
+# =============================================================================
+
+@app.post("/process_document", status_code=202)
+async def process_document_endpoint(request: Request, background_tasks: BackgroundTasks):
+    """
+    Queue a document for AI processing. Returns 202 Accepted immediately.
+    
+    MCP handles the full lifecycle:
+    1. Marks document as ai_processing
+    2. Generates AI summary with metadata extraction
+    3. Updates document with summary
+    4. Links document to event
+    5. Marks as completed (or ai_pending on failure)
+    """
+    try:
+        data = await request.json()
+        doc_id = data.get("document_id")
+        
+        if not doc_id:
+            raise HTTPException(status_code=400, detail="document_id is required")
+        
+        # Queue for background processing
+        background_tasks.add_task(
+            _process_document_async,
+            doc_id=doc_id,
+            content=data.get("content"),
+            title=data.get("title", ""),
+            document_type=data.get("document_type"),
+            source_id=data.get("source_id"),
+        )
+        
+        return JSONResponse(
+            status_code=202,
+            content={"status": "accepted", "document_id": doc_id}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error queuing document {data.get('document_id')}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process_video", status_code=202)
+async def process_video_endpoint(request: Request, background_tasks: BackgroundTasks):
+    """
+    Queue a video for AI processing. Returns 202 Accepted immediately.
+    
+    Videos can take 10+ minutes to process through Gemini.
+    MCP handles the full lifecycle asynchronously.
+    """
+    try:
+        data = await request.json()
+        doc_id = data.get("document_id")
+        
+        if not doc_id:
+            raise HTTPException(status_code=400, detail="document_id is required")
+        
+        # Queue for background processing
+        background_tasks.add_task(
+            _process_video_async,
+            doc_id=doc_id,
+            video_url=data.get("video_url"),
+            title=data.get("title", ""),
+            source_id=data.get("source_id"),
+        )
+        
+        return JSONResponse(
+            status_code=202,
+            content={"status": "accepted", "document_id": doc_id}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error queuing video {data.get('document_id')}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _process_document_async(
+    doc_id: int,
+    content: str,
+    title: str,
+    document_type: str,
+    source_id: int,
+) -> None:
+    """Background task: Process document through AI and update database."""
+    db = await get_db()
+    
+    try:
+        async with db.pool.acquire() as conn:
+            # Mark as processing
+            await conn.execute("""
+                UPDATE documents 
+                SET content_status = 'ai_processing', ai_started_at = NOW(), updated_at = NOW()
+                WHERE id = $1
+            """, doc_id)
+            
+            logger.info(f"Processing document {doc_id}: {title[:50]}...")
+            
+            # Get summarizer
+            summarizer = await get_doc_summarizer()
+            if not summarizer:
+                raise Exception("Document summarizer not available")
+            
+            # Generate summary with metadata
+            result = await summarizer.generate_summary_with_metadata(
+                title=title,
+                document_type=document_type,
+                content_text=content,
+            )
+            
+            if result and result.text:
+                # Update document with summary
+                await conn.execute("""
+                    UPDATE documents 
+                    SET ai_summary = $1, 
+                        ai_summary_updated_at = NOW(),
+                        ai_model_used = $2,
+                        content_status = 'completed',
+                        ai_completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $3
+                """, result.text, result.model, doc_id)
+                
+                logger.info(f"Document {doc_id} summary complete ({len(result.text)} chars)")
+                
+                # Link to event using extracted metadata
+                if source_id and result.meeting_date:
+                    await _link_document_to_event(
+                        conn, doc_id, title, document_type, source_id, result
+                    )
+            else:
+                raise Exception("AI returned empty summary")
+                
+    except Exception as e:
+        logger.warning(f"Document {doc_id} AI failed: {e}")
+        try:
+            async with db.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE documents 
+                    SET content_status = 'ai_pending',
+                        retry_count = COALESCE(retry_count, 0) + 1,
+                        error_message = $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                """, str(e)[:500], doc_id)
+        except Exception as db_err:
+            logger.error(f"Failed to update document {doc_id} status: {db_err}")
+
+
+async def _process_video_async(
+    doc_id: int,
+    video_url: str,
+    title: str,
+    source_id: int,
+) -> None:
+    """Background task: Process video through AI and update database."""
+    db = await get_db()
+    
+    try:
+        async with db.pool.acquire() as conn:
+            # Mark as processing
+            await conn.execute("""
+                UPDATE documents 
+                SET content_status = 'ai_processing', ai_started_at = NOW(), updated_at = NOW()
+                WHERE id = $1
+            """, doc_id)
+            
+            logger.info(f"Processing video {doc_id}: {title[:50]}...")
+            
+            # Get summarizer
+            summarizer = await get_doc_summarizer()
+            if not summarizer:
+                raise Exception("Document summarizer not available")
+            
+            # Generate summary with metadata (can take 10+ minutes)
+            result = await summarizer.generate_summary_with_metadata(
+                title=title,
+                document_type="video",
+                video_url=video_url,
+            )
+            
+            if result and result.text:
+                # Update document with summary
+                await conn.execute("""
+                    UPDATE documents 
+                    SET ai_summary = $1, 
+                        ai_summary_updated_at = NOW(),
+                        ai_model_used = $2,
+                        content_status = 'completed',
+                        ai_completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $3
+                """, result.text, result.model, doc_id)
+                
+                logger.info(f"Video {doc_id} summary complete ({len(result.text)} chars)")
+                
+                # Link to event using extracted metadata
+                if source_id and result.meeting_date:
+                    await _link_document_to_event(
+                        conn, doc_id, title, "video", source_id, result
+                    )
+            else:
+                raise Exception("AI returned empty summary")
+                
+    except Exception as e:
+        logger.warning(f"Video {doc_id} AI failed: {e}")
+        try:
+            async with db.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE documents 
+                    SET content_status = 'ai_pending',
+                        retry_count = COALESCE(retry_count, 0) + 1,
+                        error_message = $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                """, str(e)[:500], doc_id)
+        except Exception as db_err:
+            logger.error(f"Failed to update video {doc_id} status: {db_err}")
+
+
+async def _link_document_to_event(conn, doc_id: int, title: str, doc_type: str, source_id: int, result) -> None:
+    """Link document to event using AI-extracted metadata."""
+    try:
+        from datetime import datetime
+        
+        meeting_date = result.meeting_date
+        meeting_body = result.meeting_body
+        
+        # Parse date
+        meeting_dt = datetime.strptime(meeting_date, "%Y-%m-%d")
+        
+        # Get city_id from source
+        source_row = await conn.fetchrow(
+            "SELECT city_id FROM sources WHERE id = $1", source_id
+        )
+        city_id = source_row['city_id'] if source_row else None
+        
+        # Find matching event
+        event = await conn.fetchrow("""
+            SELECT e.id, e.title
+            FROM events e
+            JOIN event_sources es ON e.id = es.event_id
+            WHERE es.source_id = $1 AND DATE(e.start_time) = $2
+            LIMIT 1
+        """, source_id, meeting_dt.date())
+        
+        if event:
+            # Link to existing event
+            await conn.execute("""
+                INSERT INTO event_documents (event_id, document_id, relationship)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (event_id, document_id) DO NOTHING
+            """, event['id'], doc_id, doc_type or 'related')
+            
+            logger.info(f"Linked document {doc_id} to event {event['id']}")
+        else:
+            # Create new event if this is agenda/minutes/video
+            if doc_type in ('agenda', 'minutes', 'video'):
+                event_title = meeting_body or title.split(' - ')[0]
+                
+                event_id = await conn.fetchval("""
+                    INSERT INTO events (title, start_time, category, created_at, updated_at)
+                    VALUES ($1, $2, $3, NOW(), NOW())
+                    RETURNING id
+                """, event_title, meeting_dt, result.meeting_type or "meeting")
+                
+                # Link to source
+                await conn.execute("""
+                    INSERT INTO event_sources (event_id, source_id, first_seen_at, last_seen_at)
+                    VALUES ($1, $2, NOW(), NOW())
+                    ON CONFLICT DO NOTHING
+                """, event_id, source_id)
+                
+                # Link document
+                await conn.execute("""
+                    INSERT INTO event_documents (event_id, document_id, relationship)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT DO NOTHING
+                """, event_id, doc_id, doc_type or 'related')
+                
+                logger.info(f"Created event {event_id} and linked document {doc_id}")
+                
+    except Exception as e:
+        logger.warning(f"Failed to link document {doc_id} to event: {e}")
+
+
+# =============================================================================
+# Synchronous AI Endpoints (kept for direct calls/testing)
+# =============================================================================
+
+@app.post("/summarize_document")
+async def summarize_document_endpoint(request: Request):
+    """Generate AI summary for a document with metadata extraction."""
+    try:
+        data = await request.json()
+        doc_id = data.get("document_id")
+        content = data.get("content")
+        local_path = data.get("local_path")
+        title = data.get("title", "")
+        document_type = data.get("document_type", "document")
+        
+        if not content and not local_path:
+            raise HTTPException(status_code=400, detail="content or local_path is required")
+        
+        summarizer = await get_doc_summarizer()
+        if not summarizer:
+            raise HTTPException(status_code=503, detail="Document summarizer not available")
+        
+        # Generate summary with metadata using unified method
+        result = await summarizer.generate_summary_with_metadata(
+            title=title,
+            document_type=document_type,
+            content_text=content,
+            local_path=local_path,
+        )
+        
+        if result:
+            return {
+                "success": True,
+                "document_id": doc_id,
+                "summary": result.text,
+                "model": result.model,
+                # Extracted metadata for event linking
+                "metadata": {
+                    "meeting_date": result.meeting_date,
+                    "meeting_time": result.meeting_time,
+                    "meeting_body": result.meeting_body,
+                    "meeting_type": result.meeting_type,
+                    "meeting_location": result.meeting_location,
+                    "attendees_present": result.attendees_present,
+                    "attendees_absent": result.attendees_absent,
+                    "confidence": result.confidence,
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "document_id": doc_id,
+                "summary": None,
+                "model": None,
+                "metadata": None,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error summarizing document")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/summarize_video")
+async def summarize_video_endpoint(request: Request):
+    """Generate AI summary for a video (via YouTube transcript) with metadata."""
+    try:
+        data = await request.json()
+        doc_id = data.get("document_id")
+        video_url = data.get("video_url")
+        title = data.get("title", "")
+        
+        if not video_url:
+            raise HTTPException(status_code=400, detail="video_url is required")
+        
+        summarizer = await get_doc_summarizer()
+        if not summarizer:
+            raise HTTPException(status_code=503, detail="Document summarizer not available")
+        
+        # Generate summary from video with metadata extraction
+        result = await summarizer.generate_summary_with_metadata(
+            title=title,
+            document_type="video",
+            video_url=video_url,
+        )
+        
+        if result:
+            return {
+                "success": True,
+                "document_id": doc_id,
+                "summary": result.text,
+                "model": result.model,
+                # Extracted metadata for event linking
+                "metadata": {
+                    "meeting_date": result.meeting_date,
+                    "meeting_time": result.meeting_time,
+                    "meeting_body": result.meeting_body,
+                    "meeting_type": result.meeting_type,
+                    "meeting_location": result.meeting_location,
+                    "attendees_present": result.attendees_present,
+                    "attendees_absent": result.attendees_absent,
+                    "confidence": result.confidence,
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "document_id": doc_id,
+                "summary": None,
+                "model": None,
+                "metadata": None,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error summarizing video")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/summarize_event")
+async def summarize_event_endpoint(request: Request):
+    """Generate AI summary for an event from its documents."""
+    try:
+        data = await request.json()
+        event_id = data.get("event_id")
+        
+        if not event_id:
+            raise HTTPException(status_code=400, detail="event_id is required")
+        
+        db = await get_db()
+        summarizer = await get_doc_summarizer()
+        if not summarizer:
+            raise HTTPException(status_code=503, detail="Document summarizer not available")
+        
+        # Get event and its documents
+        async with db.pool.acquire() as conn:
+            event = await conn.fetchrow(
+                "SELECT id, title, start_time FROM events WHERE id = $1", event_id
+            )
+            if not event:
+                raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+            
+            # Get document summaries for this event
+            docs = await conn.fetch("""
+                SELECT d.title, d.document_type, d.ai_summary
+                FROM documents d
+                JOIN event_documents ed ON d.id = ed.document_id
+                WHERE ed.event_id = $1
+                  AND d.ai_summary IS NOT NULL
+                  AND d.ai_summary != ''
+                ORDER BY d.document_type, d.title
+            """, event_id)
+        
+        if not docs:
+            return {
+                "success": False,
+                "event_id": event_id,
+                "error": "No document summaries available for this event",
+            }
+        
+        # Combine document summaries into event summary
+        combined_content = f"Event: {event['title']}\n"
+        if event['start_time']:
+            combined_content += f"Date: {event['start_time'].strftime('%B %d, %Y')}\n\n"
+        
+        combined_content += "Documents:\n"
+        for doc in docs:
+            combined_content += f"\n--- {doc['document_type'].title()}: {doc['title']} ---\n"
+            combined_content += doc['ai_summary'] + "\n"
+        
+        # Generate event summary using generate_summary with content_text
+        result = await summarizer.generate_summary(
+            title=f"Summary of {event['title']}",
+            document_type="event_summary",
+            content_text=combined_content,
+        )
+        
+        summary = result.text if result else None
+        model = result.model if result else None
+        
+        return {
+            "success": bool(summary),
+            "event_id": event_id,
+            "summary": summary,
+            "model": model,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error summarizing event")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate_period_summary")
+async def generate_period_summary_endpoint(request: Request):
+    """Generate a period summary (weekly, monthly, etc.)."""
+    try:
+        data = await request.json()
+        summary_id = data.get("summary_id")
+        summary_type = data.get("summary_type", "weekly")
+        
+        if not summary_id:
+            raise HTTPException(status_code=400, detail="summary_id is required")
+        
+        db = await get_db()
+        generator = await get_summary_generator()
+        if not generator:
+            raise HTTPException(status_code=503, detail="Summary generator not available")
+        
+        # Get summary record and generate
+        async with db.pool.acquire() as conn:
+            summary_record = await conn.fetchrow(
+                "SELECT * FROM summaries WHERE id = $1", summary_id
+            )
+            if not summary_record:
+                raise HTTPException(status_code=404, detail=f"Summary {summary_id} not found")
+            
+            # Get events in period
+            events = await conn.fetch("""
+                SELECT id, title, start_time, ai_summary
+                FROM events
+                WHERE start_time >= $1 AND start_time < $2
+                  AND ai_summary IS NOT NULL AND ai_summary != ''
+                ORDER BY start_time
+            """, summary_record['period_start'], summary_record['period_end'])
+            
+            if not events:
+                return {
+                    "success": False,
+                    "summary_id": summary_id,
+                    "error": "No summarized events in this period",
+                }
+            
+            # Generate period summary
+            content = await generator.generate_period_summary(
+                events=events,
+                summary_type=summary_type,
+                period_start=summary_record['period_start'],
+                period_end=summary_record['period_end'],
+            )
+            
+            # Update summary record
+            await conn.execute("""
+                UPDATE summaries 
+                SET content = $1, status = 'published', generated_at = NOW(), updated_at = NOW()
+                WHERE id = $2
+            """, content, summary_id)
+        
+        return {
+            "success": True,
+            "summary_id": summary_id,
+            "model": "gemini-1.5-flash",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error generating period summary")
         raise HTTPException(status_code=500, detail=str(e))
 
 

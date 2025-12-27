@@ -41,6 +41,31 @@ class SummaryResult:
         return self.text + footer
 
 
+@dataclass
+class ExtendedSummaryResult:
+    """Result from summary generation with extracted metadata for linking."""
+    text: str
+    model: str
+    # Extracted metadata for event linking
+    meeting_date: Optional[str] = None  # ISO format YYYY-MM-DD
+    meeting_time: Optional[str] = None  # 24h format HH:MM or descriptive like "7:00 PM"
+    meeting_type: Optional[str] = None  # e.g., "council", "planning_commission", "school_board"
+    meeting_body: Optional[str] = None  # e.g., "City Council", "Planning Commission"
+    meeting_location: Optional[str] = None  # e.g., "Council Chambers, City Hall"
+    attendees: Optional[list[str]] = None  # List of names present/absent
+    attendees_present: Optional[list[str]] = None  # Members marked present
+    attendees_absent: Optional[list[str]] = None  # Members marked absent
+    confidence: float = 0.0  # 0-1 confidence in extracted metadata
+    
+    @property
+    def model_name(self) -> str:
+        """Get the full model name from the URL."""
+        url = MODELS.get(self.model, "")
+        if "/models/" in url:
+            return url.split("/models/")[1].split(":")[0]
+        return self.model
+
+
 # System prompt for meeting documents (agendas, minutes, packets)
 MEETING_DOC_SYSTEM_PROMPT = """You are extracting KEY SUBSTANCE from government meeting documents.
 
@@ -89,6 +114,26 @@ EXTRACT:
 - Who is affected and how
 
 Generate 200-400 words. Be specific. Do NOT be overly brief. This is the primary summary for the document and will be read by the public."""
+
+
+# System prompt for combined metadata + summary extraction
+METADATA_EXTRACTION_SYSTEM_PROMPT = """You are analyzing government documents to extract BOTH structured metadata AND a summary.
+
+METADATA EXTRACTION RULES:
+1. MEETING_DATE: Look for dates in headers, titles, or first paragraphs. Format as YYYY-MM-DD.
+2. MEETING_TIME: Look for start times. Include AM/PM.
+3. MEETING_BODY: The official governmental body (e.g., "City Council", "Planning Commission", "Board of Education")
+4. MEETING_TYPE: Categorize as one of: council, planning, zoning, school_board, committee, commission, other
+5. MEETING_LOCATION: Physical address or venue name
+6. ATTENDEES: Look for roll call, present/absent lists. List FULL NAMES.
+7. CONFIDENCE: Rate 0.0-1.0 based on how explicitly the information was stated (1.0 = clearly printed, 0.5 = inferred)
+
+SUMMARY RULES:
+For AGENDAS/MINUTES: List specific ordinances, resolutions, votes, dollar amounts. 300-600 words.
+For OTHER documents: Key information, dates, requirements. 200-400 words.
+
+SKIP: Roll call minutiae, routine approvals, procedural items.
+INCLUDE: Legislation numbers, vote counts, specific amounts, addresses."""
 
 
 # System prompt for meeting video recordings
@@ -231,6 +276,244 @@ class DocumentSummarizer:
         
         return None
     
+    async def generate_summary_with_metadata(
+        self,
+        title: str,
+        document_type: Optional[str] = None,
+        content_text: Optional[str] = None,
+        local_path: Optional[str] = None,
+        video_url: Optional[str] = None,
+        max_content_chars: int = 8000,
+    ) -> Optional[ExtendedSummaryResult]:
+        """
+        Generate an AI summary AND extract metadata in a single pass.
+        
+        This is the primary method for processing documents - it extracts:
+        - Summary text
+        - Meeting date, time, location
+        - Meeting body/type
+        - Attendee list (present/absent)
+        
+        Args:
+            title: Document title
+            document_type: Type hint (agenda, minutes, flyer, video, etc.)
+            content_text: Pre-extracted text content
+            local_path: Path to local file for PDF extraction if no content
+            video_url: YouTube URL for video documents
+            max_content_chars: Maximum characters to send to AI
+            
+        Returns:
+            ExtendedSummaryResult with summary and metadata, or None on failure
+        """
+        if not self.enabled:
+            logger.debug("AI not enabled - skipping document summary")
+            return None
+        
+        # Handle YouTube videos specially
+        if document_type == 'video' and video_url:
+            return await self._summarize_video_with_metadata(title, video_url)
+        
+        # Get content for text-based documents
+        content = content_text
+        if not content and local_path:
+            content = await extract_pdf_text(local_path, max_pages=15)
+        
+        if not content:
+            logger.debug(f"No content available for document '{title}'")
+            return None
+        
+        # Truncate content
+        content = content[:max_content_chars]
+        
+        # Build combined prompt for summary + metadata extraction
+        prompt = self._build_metadata_prompt(title, document_type, content)
+        
+        system_prompt = METADATA_EXTRACTION_SYSTEM_PROMPT
+        
+        # Use flash model
+        model = "flash"
+        response = await self._client.generate(prompt, system_prompt, model=model)
+        
+        if response:
+            result = self._parse_metadata_response(response, model)
+            if result:
+                logger.info(
+                    f"Generated summary+metadata for '{title}' "
+                    f"(date={result.meeting_date}, body={result.meeting_body})"
+                )
+                return result
+        
+        return None
+    
+    def _build_metadata_prompt(
+        self,
+        title: str,
+        document_type: Optional[str],
+        content: str,
+    ) -> str:
+        """Build prompt for combined summary + metadata extraction."""
+        type_info = f" (Type: {document_type})" if document_type else ""
+        
+        return f"""Document: **{title}**{type_info}
+
+CONTENT:
+{content}
+
+---
+Analyze this document and provide BOTH a summary AND extracted metadata.
+
+Respond in this EXACT format (use N/A for unknown fields):
+
+MEETING_DATE: [YYYY-MM-DD or N/A]
+MEETING_TIME: [HH:MM AM/PM or N/A]
+MEETING_BODY: [Official name like "City Council", "Planning Commission", "Board of Education"]
+MEETING_TYPE: [council|planning|zoning|school_board|committee|commission|other]
+MEETING_LOCATION: [Address or venue name, or N/A]
+ATTENDEES_PRESENT: [Comma-separated names, or N/A]
+ATTENDEES_ABSENT: [Comma-separated names, or N/A]
+CONFIDENCE: [0.0-1.0 based on how clearly the metadata was stated]
+
+---SUMMARY---
+[Your detailed summary here - 300-600 words for meeting docs, 200-400 for others]
+"""
+    
+    def _parse_metadata_response(
+        self,
+        response: str,
+        model: str,
+    ) -> Optional[ExtendedSummaryResult]:
+        """Parse the combined metadata + summary response."""
+        try:
+            # Split on the summary marker
+            parts = response.split("---SUMMARY---")
+            if len(parts) != 2:
+                # Try alternate markers
+                for marker in ["SUMMARY:", "**Summary**", "## Summary"]:
+                    if marker in response:
+                        parts = response.split(marker, 1)
+                        break
+            
+            if len(parts) < 2:
+                # No clear separation - treat whole thing as summary
+                return ExtendedSummaryResult(
+                    text=self._clean_response(response),
+                    model=model,
+                    confidence=0.0,
+                )
+            
+            metadata_section = parts[0].strip()
+            summary_section = self._clean_response(parts[1])
+            
+            # Parse metadata fields
+            def extract_field(text: str, field: str) -> Optional[str]:
+                import re
+                pattern = rf'{field}:\s*(.+?)(?:\n|$)'
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    value = match.group(1).strip()
+                    if value.lower() in ('n/a', 'none', 'unknown', ''):
+                        return None
+                    return value
+                return None
+            
+            def extract_list(text: str, field: str) -> Optional[list[str]]:
+                value = extract_field(text, field)
+                if value:
+                    # Split on commas, clean up
+                    return [name.strip() for name in value.split(',') if name.strip()]
+                return None
+            
+            meeting_date = extract_field(metadata_section, "MEETING_DATE")
+            meeting_time = extract_field(metadata_section, "MEETING_TIME")
+            meeting_body = extract_field(metadata_section, "MEETING_BODY")
+            meeting_type = extract_field(metadata_section, "MEETING_TYPE")
+            meeting_location = extract_field(metadata_section, "MEETING_LOCATION")
+            attendees_present = extract_list(metadata_section, "ATTENDEES_PRESENT")
+            attendees_absent = extract_list(metadata_section, "ATTENDEES_ABSENT")
+            
+            confidence_str = extract_field(metadata_section, "CONFIDENCE")
+            try:
+                confidence = float(confidence_str) if confidence_str else 0.5
+            except ValueError:
+                confidence = 0.5
+            
+            return ExtendedSummaryResult(
+                text=summary_section,
+                model=model,
+                meeting_date=meeting_date,
+                meeting_time=meeting_time,
+                meeting_type=meeting_type,
+                meeting_body=meeting_body,
+                meeting_location=meeting_location,
+                attendees_present=attendees_present,
+                attendees_absent=attendees_absent,
+                attendees=(attendees_present or []) + (attendees_absent or []) if (attendees_present or attendees_absent) else None,
+                confidence=confidence,
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse metadata response: {e}")
+            return ExtendedSummaryResult(
+                text=self._clean_response(response),
+                model=model,
+                confidence=0.0,
+            )
+    
+    async def _summarize_video_with_metadata(
+        self, title: str, video_url: str
+    ) -> Optional[ExtendedSummaryResult]:
+        """
+        Generate AI summary of a YouTube video with metadata extraction.
+        """
+        logger.info(f"Summarizing video with metadata: {title} ({video_url})")
+        
+        prompt = f"""Analyze this government meeting video recording.
+
+Video Title: {title}
+
+First, extract meeting metadata, then provide a summary.
+
+Respond in this EXACT format:
+
+MEETING_DATE: [YYYY-MM-DD or N/A - look for dates mentioned or shown]
+MEETING_TIME: [HH:MM AM/PM or N/A]
+MEETING_BODY: [Official name like "City Council", "Planning Commission"]
+MEETING_TYPE: [council|planning|zoning|school_board|committee|commission|other]
+MEETING_LOCATION: [Venue if visible/mentioned, or N/A]
+ATTENDEES_PRESENT: [Names of members you can identify as present]
+ATTENDEES_ABSENT: [Names mentioned as absent, or N/A]
+CONFIDENCE: [0.0-1.0]
+
+---SUMMARY---
+Capture what WON'T be in official minutes:
+- The mood and tone of the meeting
+- Concerns and emotions expressed by residents during public comment
+- Debates or tensions between council/board members
+- Questions that revealed uncertainty or pushback
+- Moments worth watching with approximate timestamps
+
+200-400 words focusing on the HUMAN DYNAMICS."""
+        
+        # Use flash-2.5 model for video analysis
+        model = "flash-2.5"
+        response = await self._client.generate_with_video(
+            prompt=prompt,
+            video_url=video_url,
+            system_prompt=VIDEO_MEETING_SYSTEM_PROMPT,
+        )
+        
+        if response:
+            result = self._parse_metadata_response(response, model)
+            if result:
+                logger.info(
+                    f"Generated video summary+metadata for '{title}' "
+                    f"(date={result.meeting_date}, body={result.meeting_body})"
+                )
+                return result
+        
+        logger.warning(f"Failed to generate video summary for '{title}'")
+        return None
+
     async def _summarize_video(self, title: str, video_url: str) -> Optional[SummaryResult]:
         """
         Generate AI summary of a YouTube video using Gemini's video analysis.

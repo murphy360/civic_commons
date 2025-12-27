@@ -94,6 +94,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
       MCP_API_KEY: ${MCP_API_KEY:?MCP_API_KEY is required}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     command: uvicorn services.mcp.sse_server:app --host 0.0.0.0 --port 8000 --log-level info
     healthcheck:
@@ -123,6 +124,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-civic_commons}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-civic_commons}
       MCP_URL: http://commons-mcp:8000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      AI_BATCH_SIZE: ${AI_BATCH_SIZE:-1}
+      AI_INTERVAL_SECONDS: ${AI_INTERVAL_SECONDS:-30}
+      AI_SUMMARY_MAX_AGE_DAYS: ${AI_SUMMARY_MAX_AGE_DAYS:-365}
     networks:
       - civic_network
 

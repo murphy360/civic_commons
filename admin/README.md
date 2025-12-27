@@ -2,9 +2,11 @@
 
 The internal admin dashboard for managing Civic Commons data sources and monitoring system health.
 
+**Container:** `civic_commons_admin` | **Port:** 3001
+
 ## Overview
 
-This is the internal admin interface for city staff and system administrators to manage sources, trigger scrapes, and monitor the data pipeline.
+This is the internal admin interface for city staff and system administrators to manage sources, trigger scrapes, view logs, and monitor the data pipeline.
 
 ## Tech Stack
 
@@ -21,8 +23,12 @@ This is the internal admin interface for city staff and system administrators to
 /admin
 ├── app/
 │   ├── layout.tsx           # Root layout
-│   ├── page.tsx             # Dashboard home (source management)
+│   ├── page.tsx             # Dashboard home
 │   ├── globals.css          # Global styles
+│   ├── sources/             # Source management
+│   ├── queue/               # Queue monitoring
+│   ├── logs/                # Activity logs viewer
+│   ├── legislation/         # Legislation management
 │   ├── components/          # Dashboard components
 │   └── api/                 # API routes
 ├── lib/
@@ -32,10 +38,22 @@ This is the internal admin interface for city staff and system administrators to
 
 ## Key Features
 
-- **Source Management** - View all configured data sources
+- **Source Management** - View and configure data sources
 - **Manual Scrape Triggers** - Click to trigger immediate scrape
+- **Queue Monitoring** - View download, extraction, AI queue status
+- **Activity Logs** - Real-time view of system activities
 - **Health Monitoring** - See last scrape time and status
 - **Document Stats** - View document counts per source
+
+## Pages
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Dashboard overview |
+| `/sources` | Source configuration |
+| `/queue` | Queue status and management |
+| `/logs` | Activity log viewer |
+| `/legislation` | Legislation tracking |
 
 ## Development
 
@@ -43,7 +61,7 @@ This is the internal admin interface for city staff and system administrators to
 # Install dependencies
 npm install
 
-# Run development server (port 3003)
+# Run development server (port 3001)
 npm run dev
 
 # Build for production
@@ -55,12 +73,13 @@ npm run build
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
+| `NEXTAUTH_SECRET` | NextAuth session secret |
 
 ## Docker
 
 ```bash
 docker compose up commons-admin
-# Access at http://localhost:3003
+# Access at http://localhost:3001
 ```
 
 ## Triggering Scrapes

@@ -4,6 +4,93 @@
 
 Civic Commons scrapes meeting minutes, agendas, events, and documents from city websites, school boards, libraries, and other civic organizations—then exposes that data through a user-friendly web interface and an MCP (Model Context Protocol) server for LLM integration.
 
+## 🏗️ System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              CIVIC COMMONS SYSTEM                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐            │
+│  │   Web App       │     │   Admin App     │     │  External LLMs  │            │
+│  │  (Next.js)      │     │  (Next.js)      │     │  (Claude, etc)  │            │
+│  │  Port 3000      │     │  Port 3001      │     │                 │            │
+│  └────────┬────────┘     └────────┬────────┘     └────────┬────────┘            │
+│           │                       │                       │                      │
+│           │ HTTP                  │ HTTP                  │ MCP/SSE              │
+│           ▼                       ▼                       ▼                      │
+│  ┌─────────────────────────────────────────────────────────────────┐            │
+│  │                        API LAYER                                 │            │
+│  │  ┌─────────────────┐              ┌─────────────────┐           │            │
+│  │  │   API Server    │              │   MCP Server    │           │            │
+│  │  │   (FastAPI)     │◄────────────►│   (FastAPI)     │           │            │
+│  │  │   Port 8080     │   Internal   │   Port 8000     │           │            │
+│  │  │                 │              │                 │           │            │
+│  │  │  • Chat API     │              │  • Tool hosting │           │            │
+│  │  │  • REST queries │              │  • AI Summary   │           │            │
+│  │  └────────┬────────┘              │  • PDF Extract  │           │            │
+│  │           │                       └────────┬────────┘           │            │
+│  └───────────┼────────────────────────────────┼────────────────────┘            │
+│              │                                │                                  │
+│              │                                │                                  │
+│  ┌───────────┼────────────────────────────────┼────────────────────┐            │
+│  │           │      BACKGROUND WORKERS        │                    │            │
+│  │           │                                │                    │            │
+│  │  ┌────────▼────────┐              ┌────────▼────────┐          │            │
+│  │  │     Scraper     │              │     Cascade     │          │            │
+│  │  │    (Python)     │              │    (Python)     │          │            │
+│  │  │                 │              │                 │          │            │
+│  │  │  • Fetch events │   Triggers   │  • AI queue     │          │            │
+│  │  │  • Download PDFs│─────────────►│  • Summaries    │          │            │
+│  │  │  • Extract text │              │  • Newsletters  │          │            │
+│  │  │  • Link docs    │              │                 │          │            │
+│  │  └────────┬────────┘              └────────┬────────┘          │            │
+│  │           │                                │                    │            │
+│  └───────────┼────────────────────────────────┼────────────────────┘            │
+│              │                                │                                  │
+│              │         ┌──────────────────────┘                                  │
+│              │         │                                                         │
+│              ▼         ▼                                                         │
+│  ┌─────────────────────────────────┐     ┌─────────────────────┐                │
+│  │        PostgreSQL 15            │     │   External APIs     │                │
+│  │                                 │     │                     │                │
+│  │  • Events, Documents            │     │  • Gemini AI        │                │
+│  │  • Legislation                  │     │  • City websites    │                │
+│  │  • Activity logs                │     │  • YouTube          │                │
+│  │  • Queue state                  │     │                     │                │
+│  └─────────────────────────────────┘     └─────────────────────┘                │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## 📦 Services Overview
+
+| Service | Container | Port | Technology | Responsibility |
+|---------|-----------|------|------------|----------------|
+| **Web** | `civic_commons_web` | 3000 | Next.js 14 | Public UI: search, browse, chat |
+| **Admin** | `civic_commons_admin` | 3001 | Next.js 14 | Admin UI: sources, logs, queue |
+| **API** | `civic_commons_api` | 8080 | FastAPI | REST API for frontends |
+| **MCP** | `civic_commons_mcp` | 8000 | FastAPI | AI tools, summaries, LLM interface |
+| **Scraper** | `civic_commons_scraper` | - | Python | Scheduled scraping, downloading |
+| **Cascade** | `civic_commons_cascade` | - | Python | AI queue processing |
+| **Database** | `civic_commons_db` | 5432 | PostgreSQL | Data persistence |
+
+## 🔄 Data Flow
+
+```
+1. SCRAPE      Scraper fetches events/documents from city websites
+                          ↓
+2. DOWNLOAD    PDFs downloaded to shared volume
+                          ↓
+3. EXTRACT     Text extracted from PDFs
+                          ↓
+4. QUEUE       Items queued for AI processing
+                          ↓
+5. ANALYZE     Cascade calls MCP for AI summaries (Gemini)
+                          ↓
+6. SERVE       Web/Admin apps display processed data
+```
+
 ## ✨ Features
 
 - 📅 **Event Aggregation** - Consolidates calendars from multiple civic sources
@@ -13,7 +100,7 @@ Civic Commons scrapes meeting minutes, agendas, events, and documents from city 
 - 📜 **Legislation Tracking** - Extracts and tracks ordinances, resolutions across meetings
 - 📰 **Newsletters** - Auto-generated daily/weekly/monthly digests
 - 🔗 **MCP Server** - LLM-accessible API for AI assistants
-- 🏙️ **Multi-City Support** - Configure cities via YAML (assistant persona, sources, CivicPlus mappings)
+- 🏙️ **Multi-City Support** - Configure cities via YAML
 - 🐳 **Docker-First** - One command to run everything
 
 ## 🚀 Quick Start
@@ -29,8 +116,8 @@ Copy-Item .env.example .env
 docker compose up -d
 
 # 3. Access the apps
-# Web:   http://localhost:3002
-# Admin: http://localhost:3003
+# Web:   http://localhost:3000
+# Admin: http://localhost:3001
 ```
 
 **That's it!** Database schema is auto-initialized. See [QUICKSTART.md](QUICKSTART.md) for details.
@@ -39,59 +126,74 @@ docker compose up -d
 
 ```
 civic_commons/
-├── admin/          # Admin dashboard (Next.js) - source management
-├── configs/        # City YAML configurations (persona, sources, CivicPlus CIDs)
-├── scraper/        # Python worker service
-│   ├── drivers/    # Source-specific scrapers (CivicPlus, LibCal, RSS, etc.)
-│   │   └── civicplus_utils.py  # Shared CivicPlus utilities
-│   ├── pipeline/   # Data processing (AI, storage, linking)
-│   │   └── ai/     # Gemini-powered summarization
-│   └── models/     # Pydantic data models
-├── server/         # MCP server + REST API (Python)
-├── shared/         # Shared TypeScript schema & types
-├── web/            # Public web app (Next.js)
-├── scripts/        # Database init & migrations
-└── tests/          # Test suite
+├── server/                 # All Python backend services
+│   ├── services/
+│   │   ├── api/            # REST API (FastAPI) - chat, queries
+│   │   └── mcp/            # MCP server - AI tools, summaries
+│   ├── workers/
+│   │   ├── scraper/        # Scraper worker
+│   │   │   ├── drivers/    # Source-specific scrapers
+│   │   │   ├── pipeline/   # Processing pipeline
+│   │   │   └── models/     # Data models
+│   │   └── cascade/        # AI queue processor
+│   └── shared/             # Shared Python utilities
+├── web/                    # Public Next.js app
+├── admin/                  # Admin Next.js app
+├── shared/                 # Shared TypeScript (Drizzle schema)
+├── configs/                # City YAML configurations
+├── scripts/                # DB init & migrations
+├── docs/                   # Architecture documentation
+├── personas/               # User personas for design
+└── tests/                  # Test suite
 ```
-
-## 🏗️ Architecture
-
-| Service | Container | Technology | Purpose |
-|---------|-----------|------------|---------|
-| **Web** | `commons-web` | Next.js 14 | Public search, browse, AI chat |
-| **Admin** | `commons-admin` | Next.js 14 | Source management, monitoring |
-| **Worker** | `commons-worker` | Python/APScheduler | Scheduled scraping & AI processing |
-| **MCP Server** | `commons-mcp` | Python/FastMCP | LLM tool interface (stdio) |
-| **API Server** | `commons-api` | Python/FastAPI | REST API for web/admin, configurable chat persona |
-| **Database** | `db` | PostgreSQL 15 | Data storage with full-text search |
 
 ## 🔧 Environment Variables
 
 Key variables in `.env`:
 
-```bash
-POSTGRES_PASSWORD=your_password      # Required
-GEMINI_API_KEY=your_api_key          # For AI summaries
-DEFAULT_CONFIG=twinsburg.yaml        # City config file to use
-SCRAPER_INTERVAL=3600                # Seconds between scrapes
-AI_QUEUE_INTERVAL_SECONDS=30         # AI processing frequency
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `POSTGRES_PASSWORD` | ✅ | Database password |
+| `MCP_API_KEY` | ✅ | API key for MCP server |
+| `NEXTAUTH_SECRET` | ✅ | NextAuth session secret |
+| `GEMINI_API_KEY` | ⚠️ | For AI summaries (optional) |
+| `DEFAULT_CONFIG` | - | City config file (default: `twinsburg.yaml`) |
+| `SCRAPER_INTERVAL` | - | Seconds between scrapes (default: 3600) |
 
 ## 📖 Documentation
 
-- [QUICKSTART.md](QUICKSTART.md) - Get running in 5 minutes
-- [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) - Architecture deep dive
-- [configs/README.md](configs/README.md) - City configuration guide
-- [scraper/README.md](scraper/README.md) - Worker service details
-- [scraper/drivers/README.md](scraper/drivers/README.md) - Driver development guide
-- [server/README.md](server/README.md) - MCP/API server details
+| Document | Purpose |
+|----------|---------|
+| [QUICKSTART.md](QUICKSTART.md) | Get running in 5 minutes |
+| [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) | Architecture deep dive |
+| [docs/ARCHITECTURE_PHASE1.md](docs/ARCHITECTURE_PHASE1.md) | Phase 1 design decisions |
+| [docs/QUEUE_SYSTEM.md](docs/QUEUE_SYSTEM.md) | Queue processing details |
+| [configs/README.md](configs/README.md) | City configuration guide |
+| [server/README.md](server/README.md) | Backend services overview |
+| [personas/README.md](personas/README.md) | User personas |
+
+## 🐳 Docker Commands
+
+```powershell
+# Start all services
+docker compose up -d
+
+# View logs
+docker compose logs -f commons-scraper
+
+# Restart a service
+docker compose restart commons-mcp
+
+# Rebuild after code changes
+docker compose build commons-mcp; docker compose up -d commons-mcp
+
+# Check service health
+docker ps --format "table {{.Names}}\t{{.Status}}"
+```
 
 ## 🤝 Contributing
 
-1. Check existing city configs in `configs/` for examples
-2. Read `PROJECT_CONTEXT.md` for architecture decisions
-3. Follow the Driver pattern in `scraper/drivers/` for new sources
-4. Run `python scripts/check_monoliths.py` to check code health
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## 📄 License
 

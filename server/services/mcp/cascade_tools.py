@@ -80,8 +80,8 @@ async def trigger_cascade_for_document(
             )
             summaries_marked += marked
             
-            # Cascade up: mark day, week, month summaries as stale
-            for period_type in ["day", "week", "month"]:
+            # Cascade up: mark day, week, month, quarter, annual summaries as stale
+            for period_type in ["daily", "weekly", "monthly", "quarterly", "annual"]:
                 period_count = await _mark_period_summaries_stale(
                     conn, city_id, period_type, event_date,
                     trigger_reason="child_document_added"
@@ -189,21 +189,23 @@ async def _mark_summary_stale(
 async def _mark_period_summaries_stale(
     conn: Any,
     city_id: str,
-    period_type: str,  # "day", "week", "month"
+    period_type: str,  # "daily", "weekly", "monthly", "quarterly", "annual"
     event_date: datetime,
     trigger_reason: Optional[str] = None,
 ) -> int:
     """
     Mark all period summaries that contain the event_date as stale.
     
-    For "week": marks the week containing event_date
-    For "month": marks the month containing event_date
-    For "day": just marks that day
+    For "daily": marks that day
+    For "weekly": marks the week containing event_date
+    For "monthly": marks the month containing event_date
+    For "quarterly": marks the quarter containing event_date
+    For "annual": marks the year containing event_date
     
     Args:
         conn: Database connection
         city_id: City identifier
-        period_type: Type of period ("day", "week", "month")
+        period_type: Type of period ("daily", "weekly", "monthly", "quarterly", "annual")
         event_date: Reference date
         trigger_reason: Reason for marking
         
@@ -211,30 +213,83 @@ async def _mark_period_summaries_stale(
         Count of summaries marked
     """
     try:
-        if period_type == "day":
+        if period_type == "daily":
             # Same date
-            return await _mark_summary_stale(
-                conn, city_id, "day", event_date,
-                trigger_reason=trigger_reason
-            )
+            period_start = event_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            period_end = period_start + timedelta(days=1)
         
-        elif period_type == "week":
+        elif period_type == "weekly":
             # Week containing this date (Monday-Sunday)
-            week_start = event_date - timedelta(days=event_date.weekday())
-            return await _mark_summary_stale(
-                conn, city_id, "week", week_start,
-                trigger_reason=trigger_reason
-            )
+            period_start = event_date - timedelta(days=event_date.weekday())
+            period_start = period_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            period_end = period_start + timedelta(days=7)
         
-        elif period_type == "month":
+        elif period_type == "monthly":
             # First day of month containing this date
-            month_start = event_date.replace(day=1)
-            return await _mark_summary_stale(
-                conn, city_id, "month", month_start,
-                trigger_reason=trigger_reason
+            period_start = event_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            # End is first day of next month
+            if period_start.month == 12:
+                period_end = period_start.replace(year=period_start.year + 1, month=1)
+            else:
+                period_end = period_start.replace(month=period_start.month + 1)
+        
+        elif period_type == "quarterly":
+            # Quarter containing this date (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
+            quarter = (event_date.month - 1) // 3
+            quarter_start_month = quarter * 3 + 1
+            period_start = event_date.replace(month=quarter_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+            # End is first day of next quarter
+            if quarter == 3:  # Q4
+                period_end = period_start.replace(year=period_start.year + 1, month=1)
+            else:
+                period_end = period_start.replace(month=quarter_start_month + 3)
+        
+        elif period_type == "annual":
+            # Year containing this date
+            period_start = event_date.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            period_end = period_start.replace(year=period_start.year + 1)
+        
+        else:
+            logger.warning(f"Unknown period type: {period_type}")
+            return 0
+        
+        # Mark existing summary as stale, or create a pending one
+        result = await conn.execute(
+            """
+            UPDATE summaries
+            SET status = 'stale',
+                is_stale = true,
+                trigger_reason = $5,
+                updated_at = NOW()
+            WHERE city_id = $1 
+              AND summary_type = $2 
+              AND period_start = $3
+              AND period_end = $4
+            """,
+            city_id, period_type, period_start, period_end, trigger_reason
+        )
+        
+        # Check if we updated anything
+        if result == "UPDATE 0":
+            # Create a pending summary entry
+            await conn.execute(
+                """
+                INSERT INTO summaries 
+                (city_id, summary_type, period_start, period_end, status, is_stale, 
+                 trigger_reason, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, 'pending', true, $5, NOW(), NOW())
+                ON CONFLICT (city_id, summary_type, period_start, period_end) 
+                DO UPDATE SET 
+                    status = 'stale',
+                    is_stale = true,
+                    trigger_reason = $5,
+                    updated_at = NOW()
+                """,
+                city_id, period_type, period_start, period_end, trigger_reason
             )
         
-        return 0
+        logger.debug(f"Marked {period_type} summary as stale for {city_id}: {period_start} - {period_end}")
+        return 1
         
     except Exception as e:
         logger.warning(f"Error marking {period_type} summaries stale: {e}")

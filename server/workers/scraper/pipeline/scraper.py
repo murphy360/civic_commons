@@ -39,7 +39,6 @@ class ScraperExecutor:
         get_driver,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        is_busy_callback=None,
         skip_queue_check: bool = False,
     ) -> tuple[list, list]:
         """
@@ -51,16 +50,11 @@ class ScraperExecutor:
             get_driver: Function to get driver class by name
             start_date: Optional start date for historical scraping
             end_date: Optional end date for historical scraping
-            is_busy_callback: Callback to check if AI queue is busy
-            skip_queue_check: If True, skip AI queue busy check
+            skip_queue_check: If True, skip any queue checks (unused, kept for compatibility)
             
         Returns:
             Tuple of (events, documents) for backfill tracking
         """
-        if not skip_queue_check and is_busy_callback and await is_busy_callback():
-            logger.info(f"Skipping scrape for {source.name} - AI queue has pending work")
-            return [], []
-
         date_range = ""
         if start_date and end_date:
             date_range = f" ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})"

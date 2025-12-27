@@ -27,8 +27,7 @@ icalendar>=5.0.0
 playwright>=1.40.0
 
 # PDF Processing
-pymupdf>=1.23.0
-pymupdf4llm>=0.0.5
+pymupdf4llm>=0.0.17
 
 # Utilities
 python-dateutil>=2.8.0

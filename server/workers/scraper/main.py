@@ -23,8 +23,6 @@ from models import Event, Document
 from mcp_client import MCPClient, get_mcp_client, close_mcp_client
 from pipeline.storage import DatabasePool
 from pipeline.downloader import DocumentDownloader
-from pipeline.document_linker import DocumentLinker
-from pipeline.ai_queue import AIQueueProcessor
 from pipeline.scraper import ScraperExecutor
 from pipeline.queue_manager import QueueManager
 from pipeline.queue_processor import QueueProcessor
@@ -46,9 +44,11 @@ class Worker:
     Responsibilities:
     - Load city configurations from /configs
     - Schedule scraping jobs based on cron expressions
-    - Execute drivers and store results
-    - Delegate AI enrichment to MCP server via AI queue
+    - Execute drivers and store results (discovery, download, extraction)
     - Handle graceful shutdown
+    
+    NOTE: AI processing and document-to-event linking are handled by
+    the Cascade service, not this scraper.
     """
 
     def __init__(self, settings: Settings):
@@ -62,8 +62,6 @@ class Worker:
         )
         self.db_pool: DatabasePool | None = None
         self.document_downloader: Optional[DocumentDownloader] = None
-        self.document_linker: Optional[DocumentLinker] = None
-        self.ai_queue: Optional[AIQueueProcessor] = None
         self.scraper: Optional[ScraperExecutor] = None
         self.queue_manager: Optional[QueueManager] = None
         self.queue_processor: Optional[QueueProcessor] = None
@@ -107,28 +105,12 @@ class Worker:
         self.document_downloader = DocumentDownloader(storage_dir=Path(download_dir))
         logger.info(f"Document downloader initialized (storage: {download_dir})")
 
-        # AI processors run on the MCP server - scraper is not responsible for AI
-        self.ai_processor = None
-        self.doc_summarizer = None
-        self.summary_generator = None
-        logger.info("AI processing delegated to MCP server")
-
-        # Initialize document linker
-        self.document_linker = DocumentLinker(self.db_pool)
+        # AI processing and document linking handled by the Cascade service
+        logger.info("AI processing and document linking delegated to Cascade service")
 
         # Initialize unified queue manager
         self.queue_manager = QueueManager(self.db_pool)
         logger.info("Queue manager initialized")
-
-        # Initialize AI queue processor
-        # Cascade logic is handled by server monitoring - no callback needed
-        self.ai_queue = AIQueueProcessor(
-            self.db_pool, None, None,
-            self.document_linker, self.settings,
-            queue_manager=self.queue_manager,
-            on_document_processed=None,
-            activity_logger=self.activity_logger,
-        )
 
         # Initialize scraper executor (now uses queue_manager)
         self.scraper = ScraperExecutor(
@@ -193,18 +175,7 @@ class Worker:
                 )
                 logger.info(f"Scheduled job: {job_id} ({source.schedule})")
 
-        # Schedule AI analysis queue
-        if self.doc_summarizer and self.doc_summarizer.enabled:
-            interval = self.settings.ai_queue_interval_seconds
-            self.scheduler.add_job(
-                self.process_ai_analysis_queue,
-                trigger=CronTrigger(second=f"*/{interval}") if interval < 60 else CronTrigger(minute=f"*/{interval // 60}"),
-                id="ai_analysis_queue",
-                name="Process AI Analysis Queue",
-                replace_existing=True,
-            )
-            logger.info(f"Scheduled AI analysis queue (every {interval}s)")
-
+        # AI analysis is handled by the Cascade service
         # Schedule download queue processing (every 30 seconds)
         self.scheduler.add_job(
             self.process_download_queue,
@@ -261,13 +232,8 @@ class Worker:
         """Execute a scraping job."""
         return await self.scraper.scrape_source(
             config, source, get_driver, start_date, end_date,
-            is_busy_callback=self.is_ai_queue_busy,
             skip_queue_check=skip_queue_check,
         )
-
-    async def process_ai_analysis_queue(self) -> None:
-        """Process the AI analysis queue."""
-        await self.ai_queue.process_queue()
 
     async def process_download_queue(self) -> None:
         """Process the download queue."""
@@ -285,10 +251,6 @@ class Worker:
             stats = await self.queue_processor.run_maintenance()
             if stats.get("stuck_reset", 0) > 0 or stats.get("failed_retried", 0) > 0:
                 logger.info(f"Queue maintenance: reset {stats['stuck_reset']} stuck, retried {stats['failed_retried']} failed")
-
-    async def is_ai_queue_busy(self) -> bool:
-        """Check if AI queue has pending work."""
-        return await self.ai_queue.is_busy()
 
     async def process_manual_triggers(self) -> None:
         """Check for and process manually triggered scrapes."""
@@ -439,10 +401,7 @@ class Worker:
                         except Exception as e:
                             logger.error(f"Initial scrape failed for {source.name}: {e}")
 
-        # Run initial AI queue processing
-        if self.doc_summarizer and self.doc_summarizer.enabled:
-            logger.info("Running initial AI analysis...")
-            await self.process_ai_analysis_queue()
+        # AI processing handled by Cascade service
 
         # Wait for shutdown
         await self._shutdown_event.wait()

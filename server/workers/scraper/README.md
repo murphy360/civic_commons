@@ -1,6 +1,20 @@
 # /scraper
 
-The background worker service that fetches data from configured sources and processes it with AI.
+The background worker service that fetches data from configured civic sources.
+
+## 🎯 Responsibilities
+
+**This service IS responsible for:**
+- ✅ Fetching events from city websites (via drivers)
+- ✅ Downloading PDF documents to shared storage
+- ✅ Extracting text from PDFs
+- ✅ Linking documents to events by date/title
+- ✅ Queuing items for AI processing
+- ✅ Logging activities to the activity_log table
+
+**This service is NOT responsible for:**
+- ❌ AI summarization (delegated to Cascade → MCP)
+- ❌ Newsletter generation (handled by MCP)
 
 ## Architecture
 
@@ -8,6 +22,7 @@ The background worker service that fetches data from configured sources and proc
 /scraper
 ├── main.py              # Worker entrypoint with APScheduler
 ├── config.py            # Configuration loading (Pydantic)
+├── mcp_client.py        # HTTP client for MCP server
 ├── models/              # Data models
 │   ├── event.py         # Event model
 │   └── document.py      # Document model
@@ -24,30 +39,26 @@ The background worker service that fetches data from configured sources and proc
 │   ├── youtube_channel.py   # YouTube channel scraper
 │   ├── tcsd_agendas.py      # TCSD school board
 │   └── aspnet_generic.py    # ASP.NET sites (Playwright)
-├── pipeline/            # Processing pipeline
-│   ├── storage.py       # Database operations
-│   ├── scraper.py       # Scrape execution
-│   ├── document_linker.py   # Event-document linking
-│   ├── ai_queue.py      # AI processing orchestration
-│   ├── ai_processor.py  # AI task processing
-│   ├── downloader.py    # PDF/file downloading
-│   ├── backfill.py      # Historical data backfill
-│   ├── pdf.py           # PDF text extraction
-│   └── ai/              # AI-powered features
-│       ├── client.py        # Gemini API client
-│       ├── summarizer.py    # Event summarization
-│       ├── doc_summarizer.py    # Document summarization
-│       └── newsletter.py    # Newsletter generation
-└── scripts/             # Utility scripts
+└── pipeline/            # Processing pipeline
+    ├── storage.py       # Database operations
+    ├── scraper.py       # Scrape execution
+    ├── queue_manager.py # Unified queue management
+    ├── queue_processor.py   # Queue processing loop
+    ├── document_linker.py   # Event-document linking
+    ├── downloader.py    # PDF/file downloading
+    ├── pdf.py           # PDF text extraction
+    ├── activity_logger.py   # Activity logging
+    └── ai/              # AI modules (used by MCP, not scraper)
+        ├── client.py        # Gemini API client
+        ├── doc_summarizer.py    # Document summarization
+        └── summary_generator.py # Newsletter generation
 ```
 
 ## Key Features
 
 - **Scheduled Scraping** - APScheduler runs scrapes at configured intervals
-- **AI Summaries** - Gemini-powered document and event summarization
-- **Legislation Extraction** - Identifies ordinances/resolutions in documents
-- **Document Linking** - Links documents to events by date and AI matching
-- **Newsletter Generation** - Auto-generates daily/weekly/monthly digests
+- **Document Linking** - Links documents to events by date and title matching
+- **Queue Management** - Unified queue for download, extraction, and AI tasks
 - **Manual Triggers** - Admin can trigger scrapes via database flags
 
 ## CivicPlus Drivers
@@ -74,10 +85,10 @@ The CivicPlus family of drivers share common utilities in `civicplus_utils.py`:
 
 ```bash
 # With Docker (recommended)
-docker compose up commons-worker
+docker compose up commons-scraper
 
 # Without Docker (development)
-cd scraper
+cd server/workers/scraper
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
@@ -89,11 +100,9 @@ python main.py
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | - | PostgreSQL connection string |
-| `GEMINI_API_KEY` | - | Google Gemini API key |
-| `DEFAULT_CONFIG` | twinsburg.yaml | City config file to load |
+| `MCP_URL` | - | MCP server URL for event tools |
+| `CONFIG_DIR` | /app/configs | Directory with city YAML files |
 | `SCRAPER_INTERVAL` | 3600 | Seconds between scrape cycles |
-| `AI_QUEUE_INTERVAL_SECONDS` | 30 | Seconds between AI queue checks |
-| `AI_QUEUE_BATCH_SIZE` | 1 | Documents to process per AI cycle |
 | `RUN_ON_STARTUP` | false | Run initial scrape on start |
 | `LOG_LEVEL` | INFO | Logging level |
 
@@ -101,9 +110,9 @@ python main.py
 
 ```bash
 # Build and run
-docker compose build commons-worker
-docker compose up -d commons-worker
+docker compose build commons-scraper
+docker compose up -d commons-scraper
 
 # View logs
-docker compose logs -f commons-worker
+docker compose logs -f commons-scraper
 ```
