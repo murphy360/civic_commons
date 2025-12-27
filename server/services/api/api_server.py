@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from ..shared.config import get_config, get_city_config
 from ..shared.db import Database
 from ..shared.db_init import initialize_database
+from ..shared.activity_log import log_service_started, log_service_stopped
 from .chat import ChatService
 from ..mcp.tool_executor import ToolExecutor
 
@@ -126,10 +127,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("API SERVICE STARTED - Chat API ready")
     logger.info("=" * 60)
     
+    # Log startup to activity_log for admin visibility
+    await log_service_started(db.pool, "API SERVICE")
+    
     try:
         yield
     finally:
         logger.info("Shutting down API server")
+        await log_service_stopped(db.pool, "API SERVICE")
         await close_services()
 
 
