@@ -12,9 +12,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Copy shared directory into services so it's accessible as ..shared
+RUN cp -r /app/shared /app/services/shared && \
+    touch /app/services/shared/__init__.py
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
 
 # Expose API port
 EXPOSE 8080
@@ -23,5 +28,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8080/health').raise_for_status()" || exit 1
 
-# Run the API server with uvicorn
-CMD ["uvicorn", "services.api.api_server:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run the API server as a module
+CMD ["python", "-m", "uvicorn", "services.api.api_server:app", "--host", "0.0.0.0", "--port", "8080"]

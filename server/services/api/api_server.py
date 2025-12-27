@@ -29,9 +29,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+# shared is copied to services/shared by Dockerfile
 from ..shared.config import get_config, get_city_config
 from ..shared.db import Database
-from chat import ChatService
+from ..shared.db_init import initialize_database
+from .chat import ChatService
 from ..mcp.tool_executor import ToolExecutor
 
 # Configure logging
@@ -112,11 +114,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage server lifecycle."""
     logger.info("Starting Civic Commons API Server")
     
-    # Initialize services
-    await get_db()
+    # Initialize database schema if needed
+    db = await get_db()
+    await initialize_database(db.pool)
+    
+    # Initialize remaining services
     await get_chat()
     
     logger.info("API server ready")
+    logger.info("=" * 60)
+    logger.info("API SERVICE STARTED - Chat API ready")
+    logger.info("=" * 60)
     
     try:
         yield

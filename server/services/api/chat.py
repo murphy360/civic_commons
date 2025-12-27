@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 
+# shared is copied to services/shared by Dockerfile
 from ..shared.config import get_city_config
 from ..shared.db import Database
 from ..mcp.tool_registry import get_tools_for_gemini

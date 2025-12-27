@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
+# shared is copied to services/shared by Dockerfile
 from ..shared.db import Database
 
 logger = logging.getLogger("civic_commons.tools")

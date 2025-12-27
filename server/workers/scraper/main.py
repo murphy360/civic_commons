@@ -28,7 +28,7 @@ from pipeline.ai_queue import AIQueueProcessor
 from pipeline.scraper import ScraperExecutor
 from pipeline.queue_manager import QueueManager
 from pipeline.queue_processor import QueueProcessor
-from pipeline.activity_logger import ActivityLogger
+from pipeline.activity_logger import ActivityLogger, LogLevel, LogCategory
 
 # Configure logging
 logging.basicConfig(
@@ -414,6 +414,18 @@ class Worker:
         self.schedule_sources(configs)
         self.scheduler.start()
         logger.info("Scheduler started")
+
+        logger.info("=" * 60)
+        logger.info("SCRAPER SERVICE STARTED - Ready for scheduled jobs")
+        logger.info("=" * 60)
+        
+        # Log to activity log
+        await self.activity_logger.log(
+            LogLevel.SUCCESS,
+            LogCategory.SYSTEM,
+            "startup",
+            "SCRAPER SERVICE STARTED - Ready for scheduled jobs",
+        )
 
         # Run initial scrape
         if self.settings.run_on_startup:

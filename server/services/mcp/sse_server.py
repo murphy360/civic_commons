@@ -19,10 +19,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+# shared is copied to services/shared by Dockerfile
 from ..shared.db import Database
+from ..shared.config import get_config
 from .tool_executor import ToolExecutor
 from .tool_registry import get_tool_definitions, list_tools
-from ..shared.config import get_config
 from .event_tools import analyze_event_for_upsert
 from .cascade_tools import trigger_cascade_for_document
 
@@ -200,6 +201,9 @@ async def startup_event():
         executor = await get_executor()
         register_unified_tools(app, db, executor)
         logger.info(f"MCP server ready with {len(list_tools())} tools")
+        logger.info("=" * 60)
+        logger.info("MCP SERVICE STARTED - Tool server ready")
+        logger.info("=" * 60)
     except Exception as e:
         logger.error(f"Failed to start server: {e}", exc_info=True)
         raise

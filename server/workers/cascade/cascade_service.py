@@ -48,7 +48,9 @@ class CascadeService:
         """Start the cascade service."""
         self._http_client = httpx.AsyncClient(timeout=30.0)
         self._running = True
-        logger.info(f"Cascade service started (MCP: {self.mcp_url})")
+        logger.info("=" * 60)
+        logger.info(f"CASCADE SERVICE STARTED (MCP: {self.mcp_url})")
+        logger.info("=" * 60)
         
         try:
             await self._monitor_loop()
