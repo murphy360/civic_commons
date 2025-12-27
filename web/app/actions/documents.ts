@@ -133,7 +133,7 @@ export async function prioritizePeriodicSummary(
       const existing = await sql<{ id: number }[]>`
         SELECT id FROM summaries
         WHERE summary_type = ${summaryType} 
-          AND period_start = ${startDate}
+          AND period_start = ${startDate.toISOString()}
           AND city_id = 'twinsburg'
       `;
       
@@ -166,8 +166,8 @@ export async function prioritizePeriodicSummary(
         ) VALUES (
           'twinsburg', 
           ${summaryType}, 
-          ${startDate}, 
-          ${endDate},
+          ${startDate.toISOString()}, 
+          ${endDate.toISOString()},
           'pending',
           'manual'
         )

@@ -47,6 +47,7 @@ class ExtendedSummaryResult:
     text: str
     model: str
     # Extracted metadata for event linking
+    event_title: Optional[str] = None  # Clean title for the event, e.g., "City Council Meeting"
     meeting_date: Optional[str] = None  # ISO format YYYY-MM-DD
     meeting_time: Optional[str] = None  # 24h format HH:MM or descriptive like "7:00 PM"
     meeting_type: Optional[str] = None  # e.g., "council", "planning_commission", "school_board"
@@ -364,9 +365,10 @@ Analyze this document and provide BOTH a summary AND extracted metadata.
 
 Respond in this EXACT format (use N/A for unknown fields):
 
+EVENT_TITLE: [A clean, normalized title for this meeting/event. Examples: "City Council Meeting", "Planning Commission Meeting", "Board of Education Meeting", "J.E.DI. Committee Meeting". Do NOT include dates, "Agenda", "Minutes", or file extensions.]
 MEETING_DATE: [YYYY-MM-DD or N/A]
 MEETING_TIME: [HH:MM AM/PM or N/A]
-MEETING_BODY: [Official name like "City Council", "Planning Commission", "Board of Education"]
+MEETING_BODY: [The governing body name - e.g. "City Council", "Planning Commission"]
 MEETING_TYPE: [council|planning|zoning|school_board|committee|commission|other]
 MEETING_LOCATION: [Address or venue name, or N/A]
 ATTENDEES_PRESENT: [Comma-separated names, or N/A]
@@ -374,7 +376,7 @@ ATTENDEES_ABSENT: [Comma-separated names, or N/A]
 CONFIDENCE: [0.0-1.0 based on how clearly the metadata was stated]
 
 ---SUMMARY---
-[Your detailed summary here - 300-600 words for meeting docs, 200-400 for others]
+[Concise summary - be PROPORTIONAL to the document content. If the agenda is 10 items, a 2-3 sentence summary is fine. Only write more if there's substantive content worth capturing. Focus on: what decisions will be/were made, key topics, and anything unusual or noteworthy. Skip boilerplate like "roll call" and "approval of minutes" unless something specific happened.]
 """
     
     def _parse_metadata_response(
@@ -423,6 +425,7 @@ CONFIDENCE: [0.0-1.0 based on how clearly the metadata was stated]
                     return [name.strip() for name in value.split(',') if name.strip()]
                 return None
             
+            event_title = extract_field(metadata_section, "EVENT_TITLE")
             meeting_date = extract_field(metadata_section, "MEETING_DATE")
             meeting_time = extract_field(metadata_section, "MEETING_TIME")
             meeting_body = extract_field(metadata_section, "MEETING_BODY")
@@ -440,6 +443,7 @@ CONFIDENCE: [0.0-1.0 based on how clearly the metadata was stated]
             return ExtendedSummaryResult(
                 text=summary_section,
                 model=model,
+                event_title=event_title,
                 meeting_date=meeting_date,
                 meeting_time=meeting_time,
                 meeting_type=meeting_type,
@@ -477,12 +481,13 @@ Respond in this EXACT format:
 
 MEETING_DATE: [YYYY-MM-DD or N/A - look for dates mentioned or shown]
 MEETING_TIME: [HH:MM AM/PM or N/A]
-MEETING_BODY: [Official name like "City Council", "Planning Commission"]
+MEETING_BODY: [The OFFICIAL NAME of the governing body ONLY - e.g. "City Council", "Planning Commission". Do NOT include "Meeting", "Video", dates, or other suffixes. Just the body name.]
 MEETING_TYPE: [council|planning|zoning|school_board|committee|commission|other]
 MEETING_LOCATION: [Venue if visible/mentioned, or N/A]
 ATTENDEES_PRESENT: [Names of members you can identify as present]
 ATTENDEES_ABSENT: [Names mentioned as absent, or N/A]
 CONFIDENCE: [0.0-1.0]
+EVENT_TITLE: [Clean title for the meeting/event - e.g. "City Council Regular Meeting", "Planning Commission Work Session". No dates, no "Video"/"Recording" suffixes. Just the meeting type.]
 
 ---SUMMARY---
 Capture what WON'T be in official minutes:

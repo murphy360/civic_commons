@@ -124,22 +124,22 @@ function getMonthLabel(date: string): string {
 }
 
 function getWeekKey(date: string): string {
+  // Parse date as local time to avoid timezone shifts
   const d = new Date(date);
-  // Get the Monday of this week
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust for Sunday
-  const monday = new Date(d.setDate(diff));
+  // Use UTC methods to avoid timezone issues
+  const day = d.getUTCDay();
+  const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1); // Adjust for Sunday
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff));
   return monday.toISOString().split('T')[0];
 }
 
 function getWeekRange(date: string): { start: Date; end: Date; label: string } {
   const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  const monday = new Date(d);
-  monday.setDate(diff);
+  const day = d.getUTCDay();
+  const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff));
   const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
   
   const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
   const label = `${monday.toLocaleDateString('en-US', options)} - ${sunday.toLocaleDateString('en-US', options)}`;

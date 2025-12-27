@@ -656,7 +656,9 @@ async def _link_document_to_event(conn, doc_id: int, title: str, doc_type: str, 
         else:
             # Create new event if this is agenda/minutes/video
             if doc_type in ('agenda', 'minutes', 'video'):
-                event_title = meeting_body or title.split(' - ')[0]
+                # Use AI-extracted event_title if available, fallback to meeting_body
+                event_title = getattr(result, 'event_title', None) or result.meeting_body or title.split(' - ')[0]
+                event_title = _normalize_event_title(event_title)
                 
                 event_id = await conn.fetchval("""
                     INSERT INTO events (title, start_time, category, created_at, updated_at)
@@ -678,10 +680,41 @@ async def _link_document_to_event(conn, doc_id: int, title: str, doc_type: str, 
                     ON CONFLICT DO NOTHING
                 """, event_id, doc_id, doc_type or 'related')
                 
-                logger.info(f"Created event {event_id} and linked document {doc_id}")
+                logger.info(f"Created event {event_id} '{event_title}' and linked document {doc_id}")
                 
     except Exception as e:
         logger.warning(f"Failed to link document {doc_id} to event: {e}")
+
+
+def _normalize_event_title(title: str) -> str:
+    """
+    Normalize event title by removing document type suffixes.
+    
+    Examples:
+        "City Council Agenda" -> "City Council"
+        "Planning Commission - Minutes" -> "Planning Commission"
+        "J.E.DI. Committee (Justice, Equity, Diversity & Inclusion) Agenda" -> "J.E.DI. Committee (Justice, Equity, Diversity & Inclusion)"
+    """
+    import re
+    
+    # Suffixes to remove (case insensitive)
+    suffixes = [
+        r'\s*-?\s*Agenda$',
+        r'\s*-?\s*Minutes$',
+        r'\s*-?\s*Video$',
+        r'\s*-?\s*Meeting Agenda$',
+        r'\s*-?\s*Meeting Minutes$',
+        r'\s*-?\s*Agenda Meeting$',
+        r'\s*-?\s*Regular Meeting$',
+        r'\s*-?\s*Special Meeting$',
+        r'\s*-?\s*Work Session$',
+    ]
+    
+    normalized = title.strip()
+    for suffix in suffixes:
+        normalized = re.sub(suffix, '', normalized, flags=re.IGNORECASE)
+    
+    return normalized.strip()
 
 
 # =============================================================================
