@@ -130,6 +130,52 @@ class _AIProcessorWrapper:
     
     async def generate_event_summary(self, **kwargs):
         return await self._summarizer.generate_event_summary(**kwargs)
+    
+    async def evaluate_event_match(self, new_title, new_description, existing_title, existing_description):
+        """Evaluate if two events are duplicates using AI."""
+        if not self.enabled:
+            return {"is_duplicate": False, "confidence": 0.0, "reason": "AI disabled"}
+        
+        prompt = f"""Compare these two events and determine if they are duplicates:
+
+NEW EVENT:
+Title: {new_title}
+Description: {new_description}
+
+EXISTING EVENT:
+Title: {existing_title}
+Description: {existing_description}
+
+Respond with ONLY valid JSON (no other text):
+{{
+  "is_duplicate": true/false,
+  "confidence": 0.0-1.0,
+  "reason": "brief explanation"
+}}"""
+        
+        system_prompt = "You are a deduplication expert. Determine if two events are the same."
+        
+        try:
+            response = await self._gemini.generate(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                temperature=0.1,
+                model="flash"
+            )
+            
+            if not response:
+                return {"is_duplicate": False, "confidence": 0.0, "reason": "No AI response"}
+            
+            import json
+            result = json.loads(response)
+            return {
+                "is_duplicate": result.get("is_duplicate", False),
+                "confidence": result.get("confidence", 0.0),
+                "reason": result.get("reason", "AI evaluation"),
+            }
+        except Exception as e:
+            logger.error(f"Error in evaluate_event_match: {e}")
+            return {"is_duplicate": False, "confidence": 0.0, "reason": f"Error: {str(e)}"}
 
 
 async def get_doc_summarizer() -> Optional[object]:
@@ -315,7 +361,8 @@ async def call_tool(connection_id: str, tool_name: str, request: Request):
             )
             connection = _connections[connection_id]
             await connection.send_message("tool_result", {"tool": tool_name, "result": result})
-            return {"status": "success", "tool": tool_name}
+            # Return the actual decision, not just a success wrapper
+            return result
         
         # Otherwise use executor for other tools
         executor = await get_executor()
@@ -992,7 +1039,7 @@ async def generate_period_summary_endpoint(request: Request):
                 events=[dict(e) for e in events],
             )
             
-            if not result or not result.content:
+            if not result or not result.text:
                 return {
                     "success": False,
                     "summary_id": summary_id,
@@ -1002,9 +1049,9 @@ async def generate_period_summary_endpoint(request: Request):
             # Update summary record
             await conn.execute("""
                 UPDATE summaries 
-                SET content = $1, status = 'published', generated_at = NOW(), updated_at = NOW()
+                SET text = $1, status = 'published', generated_at = NOW(), updated_at = NOW()
                 WHERE id = $2
-            """, result.content, summary_id)
+            """, result.text, summary_id)
         
         return {
             "success": True,

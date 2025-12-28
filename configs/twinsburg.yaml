@@ -11,7 +11,7 @@ city_profile:
 
 # Data cutoff - no events/documents before this date will be processed
 # This helps avoid pulling years of historical data on initial setup
-data_start_date: "2025-01-01"
+data_start_date: "2025-10-01"
 
 # =============================================================================
 # ASSISTANT PERSONALITY

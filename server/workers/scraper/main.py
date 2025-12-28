@@ -112,6 +112,7 @@ class Worker:
             queue_manager=self.queue_manager,
             activity_logger=self.activity_logger,
             mcp_client=self.mcp_client,
+            api_url="http://commons-api:8080",
         )
 
         # Initialize unified queue processor

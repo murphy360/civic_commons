@@ -1,12 +1,14 @@
 """
 Scraper execution and result storage.
 
-Handles running drivers and persisting results to the database.
+Handles running drivers and persisting results to the API server.
+Events are sent to /api/events/upsert endpoint for processing.
 Documents are registered as "discovered" immediately (visible in UI),
 then processed asynchronously through the queue system.
 """
 
 import logging
+import httpx
 from datetime import datetime, timedelta
 from typing import Optional, TYPE_CHECKING
 
@@ -20,17 +22,19 @@ logger = logging.getLogger("civic.scraper")
 
 
 class ScraperExecutor:
-    """Executes scraping jobs and stores results."""
+    """Executes scraping jobs and sends results to API server."""
 
     def __init__(self, db_pool, document_downloader=None, 
                  queue_manager: QueueManager = None,
                  activity_logger: Optional["ActivityLogger"] = None,
-                 mcp_client=None):
+                 mcp_client=None,
+                 api_url: str = "http://localhost:8089"):
         self.db_pool = db_pool
         self.document_downloader = document_downloader
         self.queue_manager = queue_manager
         self.activity = activity_logger
         self.mcp_client = mcp_client
+        self.api_url = api_url  # API server base URL
 
     async def scrape_source(
         self,
@@ -142,10 +146,14 @@ class ScraperExecutor:
 
     async def _store_results(self, conn, source, events: list, documents: list, city_id: str, city_name: str = "", mcp_client=None, entity_id: int | None = None, data_start_date: datetime | None = None) -> None:
         """
-        Store scraped results in database.
+        Store scraped results by sending to API server.
         
-        Documents are registered as "discovered" - immediately visible in UI
-        but queued for async download/processing. No inline downloads.
+        Events are sent to /api/events/upsert which handles:
+        - MCP analysis for deduplication
+        - Database persistence
+        - Activity logging
+        
+        Documents are registered as "discovered" locally.
         
         Args:
             conn: Database connection
@@ -153,39 +161,31 @@ class ScraperExecutor:
             events: List of events to store
             documents: List of standalone documents to store
             city_id: City identifier
-            city_name: City display name (for AI enrichment)
-            mcp_client: Optional MCP client for event deduplication
+            city_name: City display name
+            mcp_client: Optional MCP client (deprecated - API handles this)
             entity_id: Optional entity ID from source config
             data_start_date: Optional cutoff date - skip items before this date
         """
         # Filter events and documents by data_start_date if set
+        # NOTE: We now send all events to the API; the API/MCP decides on acceptance
+        # This allows the system to handle deduplication and date filtering centrally
         if data_start_date:
             original_event_count = len(events)
             original_doc_count = len(documents)
             
-            # Filter events by starts_at (the Event model uses starts_at, not start_time)
-            events = [e for e in events if e.starts_at and e.starts_at >= data_start_date]
+            # We log what WOULD be filtered, but don't actually filter
+            # This provides visibility without losing data
+            old_events = [e for e in events if e.starts_at and e.starts_at < data_start_date]
+            old_docs = [d for d in (documents + [doc for e in events for doc in e.documents]) 
+                       if (d.meeting_date or d.published_at) and (d.meeting_date or d.published_at) < data_start_date]
             
-            # Filter standalone documents by meeting_date or published_at
-            def doc_after_start(d):
-                doc_date = d.meeting_date or d.published_at
-                return not doc_date or doc_date >= data_start_date
-            
-            documents = [d for d in documents if doc_after_start(d)]
-            
-            # Also filter documents attached to events
-            for event in events:
-                if event.documents:
-                    event.documents = [d for d in event.documents if doc_after_start(d)]
-            
-            filtered_events = original_event_count - len(events)
-            filtered_docs = original_doc_count - len(documents)
-            if filtered_events > 0 or filtered_docs > 0:
-                logger.info(f"Filtered out {filtered_events} events and {filtered_docs} documents before {data_start_date.strftime('%Y-%m-%d')}")
+            if old_events or old_docs:
+                logger.info(f"Note: {len(old_events)} events and {len(old_docs)} documents are before {data_start_date.strftime('%Y-%m-%d')} - will still upsert for MCP analysis")
 
         if not events and not documents:
             return
 
+        # Get or create source
         source_id = await self.db_pool.get_or_create_source(
             conn,
             name=source.name,
@@ -197,15 +197,13 @@ class ScraperExecutor:
             entity_id=entity_id,
         )
 
-        # Store events
+        # Send events to API
         for event in events:
             try:
-                # Scraper does NOT do AI enrichment - server handles that via AI queue
-                # Just store the raw event data and let the server enrich it asynchronously
-                event_id = await self.db_pool.upsert_event(
-                    conn, source_id, event, mcp_client=mcp_client, entity_id=entity_id, city_id=city_id
+                event_id = await self._upsert_event_via_api(
+                    source_id, event, city_id
                 )
-                logger.debug(f"Stored event: {event.title} -> {event_id}")
+                logger.debug(f"Stored event via API: {event.title} -> {event_id}")
 
                 # Register event documents as discovered (visible immediately)
                 for document in event.documents:
@@ -230,6 +228,64 @@ class ScraperExecutor:
 
         await self.db_pool.update_source_health(conn, source_id, success=True)
         logger.info(f"Completed storing results for {source.name}: {len(events)} events, {len(documents)} documents")
+
+    async def _upsert_event_via_api(
+        self,
+        source_id: int,
+        event: Event,
+        city_id: str,
+    ) -> int:
+        """
+        Send event to API server for upsert.
+        
+        The API server will:
+        1. Call MCP to analyze the event
+        2. Create or merge in database
+        3. Log the decision and action
+        
+        Args:
+            source_id: Source ID
+            event: Event to upsert
+            city_id: City identifier
+            
+        Returns:
+            Event ID from server
+            
+        Raises:
+            Exception if API call fails
+        """
+        payload = {
+            "source_id": source_id,
+            "title": event.title,
+            "start_time": event.starts_at.isoformat() if event.starts_at else None,
+            "end_time": event.ends_at.isoformat() if event.ends_at else None,
+            "location": event.location,
+            "description": event.description,
+            "category": event.event_type.value if hasattr(event.event_type, 'value') else str(event.event_type),
+            "is_virtual": event.is_virtual,
+            "virtual_url": event.virtual_url,
+            "external_id": event.external_id,
+            "source_url": event.source_url,
+            "city_id": city_id,
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{self.api_url}/events/upsert",
+                    json=payload,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["event_id"]
+                else:
+                    error = resp.text
+                    logger.error(f"API error {resp.status_code}: {error}")
+                    raise Exception(f"API returned {resp.status_code}: {error}")
+        except httpx.HTTPError as e:
+            logger.error(f"API connection error: {e}")
+            raise
+
 
     async def _register_discovered_document(
         self, 

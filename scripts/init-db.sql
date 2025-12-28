@@ -1,6 +1,15 @@
 -- Civic Commons Database Schema
 -- Automatically runs on first container start via docker-entrypoint-initdb.d
 
+-- Ensure the application role exists (safe to run multiple times)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'civic_commons') THEN
+        CREATE ROLE civic_commons WITH LOGIN PASSWORD 'civic_commons';
+    END IF;
+END
+$$;
+
 -- =============================================================================
 -- Extensions
 -- =============================================================================
@@ -322,6 +331,7 @@ CREATE TABLE IF NOT EXISTS documents (
     third_reading_date TIMESTAMP,      -- Third reading date (if applicable)
     final_action_date TIMESTAMP,       -- When approved/failed/vetoed
     entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL, -- Associated entity
+    cascade_triggered_at TIMESTAMP,    -- When cascade was triggered for this document
     raw_data JSONB,
     search_vector TSVECTOR,
     created_at TIMESTAMP DEFAULT NOW() NOT NULL,
@@ -337,6 +347,9 @@ CREATE INDEX IF NOT EXISTS documents_search_idx ON documents USING GIN(search_ve
 CREATE INDEX IF NOT EXISTS documents_linking_status_idx ON documents(linking_status);
 CREATE INDEX IF NOT EXISTS documents_summary_priority_idx ON documents(summary_priority DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS documents_entity_id_idx ON documents(entity_id);
+CREATE INDEX IF NOT EXISTS idx_documents_cascade_check 
+ON documents(id, updated_at, cascade_triggered_at)
+WHERE ai_summary IS NOT NULL AND ai_summary != '';
 -- Content lifecycle queue indexes (for efficient queue retrieval)
 CREATE INDEX IF NOT EXISTS documents_content_status_idx ON documents(content_status);
 CREATE INDEX IF NOT EXISTS documents_content_status_date_idx ON documents(content_status, meeting_date DESC NULLS LAST);
@@ -812,6 +825,21 @@ BEGIN
     DELETE FROM activity_log WHERE timestamp < NOW() - INTERVAL '7 days';
 END;
 $$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- Grants: Permissions for application role
+-- =============================================================================
+GRANT CONNECT ON DATABASE civic_commons TO civic_commons;
+GRANT USAGE ON SCHEMA public TO civic_commons;
+
+-- Grant permissions on all tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO civic_commons;
+
+-- Grant permissions on all sequences (for auto-increment)
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO civic_commons;
+
+-- Grant permissions on all functions
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO civic_commons;
 
 -- =============================================================================
 -- Done

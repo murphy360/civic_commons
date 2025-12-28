@@ -779,6 +779,24 @@ class DatabasePool:
                     if city_id:
                         await self.add_event_city(conn, event_id, city_id, is_primary=True)
                     logger.info(f"MCP-created event: '{event.title}' -> {event_id}")
+                    
+                    # Log the successful upsert action
+                    if self.activity:
+                        await self.activity.log(
+                            level="success",
+                            category="tool_call",
+                            action="upsert_event_created",
+                            message=f"✓ Created new event: {event.title} [Date: {event.starts_at.isoformat() if event.starts_at else 'TBD'}, Location: {event.location or 'TBD'}]",
+                            entity_type="event",
+                            entity_id=event_id,
+                            entity_title=event.title,
+                            details={
+                                "event_id": event_id,
+                                "source_id": source_id,
+                                "action": "create",
+                                "decision": decision,
+                            }
+                        )
                     return event_id
                 
                 elif action == "merge":
@@ -797,6 +815,25 @@ class DatabasePool:
                             f"MCP-merged event '{event.title}' to {merge_event_id} "
                             f"(confidence: {confidence:.2f})"
                         )
+                        
+                        # Log the successful upsert action
+                        if self.activity:
+                            await self.activity.log(
+                                level="success",
+                                category="tool_call",
+                                action="upsert_event_merged",
+                                message=f"⟷ Merged into event #{merge_event_id}: {event.title} (confidence: {confidence:.0%}) [Date: {event.starts_at.isoformat() if event.starts_at else 'TBD'}, Location: {event.location or 'TBD'}]",
+                                entity_type="event",
+                                entity_id=merge_event_id,
+                                entity_title=event.title,
+                                details={
+                                    "event_id": merge_event_id,
+                                    "source_id": source_id,
+                                    "action": "merge",
+                                    "confidence": confidence,
+                                    "decision": decision,
+                                }
+                            )
                         return merge_event_id
             
             # If MCP decision failed or returned error, fall through to local logic
@@ -853,7 +890,12 @@ class DatabasePool:
                 duration_ms = (time.time() - start_time) * 1000
                 await self.activity.log_tool_completed(
                     tool_name="analyze_event_for_upsert",
-                    args={"title": event.title, "source_id": source_id},
+                    args={
+                        "title": event.title, 
+                        "source_id": source_id,
+                        "start_time": event.starts_at.isoformat() if event.starts_at else None,
+                        "location": event.location,
+                    },
                     result=decision,
                     execution_time_ms=duration_ms,
                     source="mcp",

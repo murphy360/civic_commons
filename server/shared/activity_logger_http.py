@@ -618,6 +618,95 @@ class ActivityLoggerHTTP:
     # GENERIC ERROR LOGGING
     # =========================================================================
 
+    async def log_tool_completed(
+        self, tool_name: str, args: Optional[dict] = None, result: Optional[dict] = None,
+        execution_time_ms: Optional[float] = None, source: Optional[str] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        """Log successful tool call completion with enhanced details for event tools."""
+        full_details = details or {}
+        if args:
+            full_details["args"] = args
+        if result:
+            full_details["result"] = result
+        if execution_time_ms:
+            full_details["execution_time_ms"] = execution_time_ms
+        if source:
+            full_details["source"] = source
+        
+        # Build message and header - tool name goes in header, details in message
+        message = "Completed"
+        header_title = f"{tool_name}"
+        entity_id = None
+        entity_title = None
+        
+        if tool_name in ("upsert_event", "analyze_event_for_upsert") and result:
+            action = result.get("action", "unknown")
+            event_title = args.get("title", "Unknown event") if args else "Unknown event"
+            
+            if action == "create":
+                message = f"✓ Created new event: {event_title}"
+                entity_title = event_title
+            elif action == "merge":
+                event_id = result.get("event_id")
+                confidence = result.get("confidence", 0)
+                entity_id = event_id
+                message = f"⟷ Merged into event #{event_id}: {event_title} (confidence: {confidence:.0%})"
+                entity_title = event_title
+            elif action == "error":
+                error = result.get("error", "Unknown error")
+                message = f"✗ Event analysis failed: {error}"
+            
+            # Add event details to the log message
+            if args:
+                start_time = args.get("start_time", "")
+                location = args.get("location", "")
+                if start_time or location:
+                    details_parts = []
+                    if start_time:
+                        details_parts.append(f"Date: {start_time}")
+                    if location:
+                        details_parts.append(f"Location: {location}")
+                    if details_parts:
+                        message += f" [{', '.join(details_parts)}]"
+        
+        await self.log(
+            LogLevel.SUCCESS,
+            LogCategory.TOOL_CALL,
+            f"{tool_name}",
+            message,
+            entity_type="event" if tool_name in ("upsert_event", "analyze_event_for_upsert") else "tool",
+            entity_id=entity_id,
+            entity_title=entity_title or header_title,
+            details=full_details if full_details else None,
+        )
+
+    async def log_tool_failed(
+        self, tool_name: str, args: Optional[dict] = None, error: Optional[str] = None,
+        execution_time_ms: Optional[float] = None, source: Optional[str] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        """Log tool call failure."""
+        full_details = details or {}
+        if args:
+            full_details["args"] = args
+        if error:
+            full_details["error"] = error
+        if execution_time_ms:
+            full_details["execution_time_ms"] = execution_time_ms
+        if source:
+            full_details["source"] = source
+        
+        await self.log(
+            LogLevel.ERROR,
+            LogCategory.TOOL_CALL,
+            f"{tool_name}",
+            f"Tool {tool_name} failed: {error or 'Unknown error'}",
+            entity_type="tool",
+            entity_title=tool_name,
+            details=full_details if full_details else None,
+        )
+
     async def log_error(
         self,
         category: LogCategory,
