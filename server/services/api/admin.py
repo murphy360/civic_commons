@@ -113,8 +113,22 @@ class QueueItem(BaseModel):
     item_type: str  # document/video
     content_status: str
     source_name: Optional[str] = None
+    source_url: Optional[str] = None
+    meeting_date: Optional[datetime] = None
+    document_type: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    error_message: Optional[str] = None
+    retry_count: int = 0
+    discovered_at: Optional[datetime] = None
+    download_started_at: Optional[datetime] = None
+    download_completed_at: Optional[datetime] = None
+    extraction_started_at: Optional[datetime] = None
+    extraction_completed_at: Optional[datetime] = None
+    ai_started_at: Optional[datetime] = None
+    ai_completed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    local_path: Optional[str] = None
 
 
 class QueueItemsResponse(BaseModel):
@@ -504,11 +518,11 @@ async def get_queue_items(
     city_id: str = Query(..., description="City identifier"),
     status: Optional[str] = Query(None, description="Filter by content_status"),
     item_type: Optional[str] = Query(None, description="document or video"),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> QueueItemsResponse:
     """
-    Get paginated queue items with filtering.
+    Get paginated queue items with filtering - exact same queue as the processor uses.
     
     Args:
         city_id: City identifier (required)
@@ -522,19 +536,35 @@ async def get_queue_items(
     
     try:
         async with db.pool.acquire() as conn:
-            query = "SELECT id, title, 'document' as item_type, content_status, created_at, updated_at FROM documents WHERE 1=1"
+            query = """
+                SELECT 
+                    d.id, d.title, 'document' as item_type, d.content_status,
+                    s.name as source_name, d.source_url, d.meeting_date, d.document_type,
+                    d.file_size_bytes, d.error_message, d.retry_count,
+                    d.discovered_at, d.download_started_at, d.download_completed_at,
+                    d.extraction_started_at, d.extraction_completed_at,
+                    d.ai_started_at, d.ai_completed_at,
+                    d.created_at, d.updated_at, d.local_path
+                FROM documents d
+                LEFT JOIN sources s ON d.source_id = s.id
+                WHERE 1=1
+            """
             params = []
             
             if status:
-                query += " AND content_status = $" + str(len(params) + 1)
+                query += " AND d.content_status = $" + str(len(params) + 1)
                 params.append(status)
             
             # Get total count
-            count_query = f"SELECT COUNT(*) FROM ({query}) as t"
-            total_count = await conn.fetchval(count_query, *params)
+            count_query = f"SELECT COUNT(*) FROM documents WHERE 1=1"
+            count_params = []
+            if status:
+                count_query += " AND content_status = $1"
+                count_params.append(status)
+            total_count = await conn.fetchval(count_query, *count_params)
             
-            # Get paginated results
-            query += f" ORDER BY updated_at DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
+            # Get paginated results - ordered by priority like the processor does
+            query += f" ORDER BY d.meeting_date DESC NULLS LAST, d.created_at DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
             params.extend([limit, offset])
             
             rows = await conn.fetch(query, *params)
@@ -545,8 +575,23 @@ async def get_queue_items(
                     title=row['title'],
                     item_type=row['item_type'],
                     content_status=row['content_status'],
+                    source_name=row['source_name'],
+                    source_url=row['source_url'],
+                    meeting_date=row['meeting_date'],
+                    document_type=row['document_type'],
+                    file_size_bytes=row['file_size_bytes'],
+                    error_message=row['error_message'],
+                    retry_count=row['retry_count'],
+                    discovered_at=row['discovered_at'],
+                    download_started_at=row['download_started_at'],
+                    download_completed_at=row['download_completed_at'],
+                    extraction_started_at=row['extraction_started_at'],
+                    extraction_completed_at=row['extraction_completed_at'],
+                    ai_started_at=row['ai_started_at'],
+                    ai_completed_at=row['ai_completed_at'],
                     created_at=row['created_at'],
                     updated_at=row['updated_at'],
+                    local_path=row['local_path'],
                 )
                 for row in rows
             ]
