@@ -38,6 +38,7 @@ from ..shared.activity_log import log_service_started, log_service_stopped
 from ..shared.activity_api import router as activity_router, set_db_pool
 from .chat import ChatService
 from ..mcp.tool_executor import ToolExecutor
+from .admin import router as admin_router
 
 # Configure logging
 logging.basicConfig(
@@ -126,6 +127,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     
     # Initialize remaining services
     await get_chat()
+    
+    # Initialize admin router with database getter
+    from .admin import set_db_getter
+    set_db_getter(get_db)
     
     logger.info("API server ready")
     logger.info("=" * 60)
@@ -220,6 +225,9 @@ async def log_request_response(request: Request, call_next):
 
 # Include internal activity logging router
 app.include_router(activity_router)
+
+# Include admin endpoints
+app.include_router(admin_router)
 
 
 # ============================================================================

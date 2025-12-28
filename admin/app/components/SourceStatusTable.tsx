@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { adminApi } from '@/lib/adminApi';
 
 interface Source {
   id: number;
@@ -61,9 +62,7 @@ export default function SourceStatusTable({ initialSources }: SourceStatusTableP
 
   const refreshSources = useCallback(async () => {
     try {
-      const response = await fetch('/api/scrape');
-      if (!response.ok) throw new Error('Failed to fetch sources');
-      const data = await response.json();
+      const data = await adminApi.getSources();
       setSources(data.sources || []);
     } catch (error) {
       console.error('Failed to refresh sources:', error);
@@ -76,16 +75,8 @@ export default function SourceStatusTable({ initialSources }: SourceStatusTableP
     setMessage(null);
 
     try {
-      const response = await fetch('/api/scrape', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sourceId ? { sourceId } : { all: true }),
-      });
-
-      if (!response.ok) throw new Error('Failed to trigger scrape');
-      
-      const data = await response.json();
-      setMessage({ type: 'success', text: data.message });
+      const data = await adminApi.triggerScrape(sourceId);
+      setMessage({ type: 'success', text: data.message || 'Scrape triggered' });
       
       // Refresh sources after a short delay
       setTimeout(refreshSources, 1000);

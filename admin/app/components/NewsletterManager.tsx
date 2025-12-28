@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
+import { adminApi } from '@/lib/adminApi';
 
 interface Newsletter {
   id: number;
@@ -63,9 +64,7 @@ export default function NewsletterManager() {
 
   const fetchNewsletters = useCallback(async () => {
     try {
-      const response = await fetch('/api/newsletters');
-      if (!response.ok) throw new Error('Failed to fetch');
-      const data = await response.json();
+      const data = await adminApi.getNewsletters();
       setNewsletters(data.newsletters || []);
       setStats(data.stats || { total: 0, completed: 0, pending: 0, failed: 0 });
     } catch (error) {
@@ -87,20 +86,9 @@ export default function NewsletterManager() {
     setMessage(null);
 
     try {
-      const response = await fetch('/api/newsletters', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ period_type: periodType }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setMessage({ type: 'error', text: data.error || 'Failed to generate' });
-      } else {
-        setMessage({ type: 'success', text: data.message });
-        setTimeout(fetchNewsletters, 1000);
-      }
+      const data = await adminApi.createNewsletter({ period_type: periodType });
+      setMessage({ type: 'success', text: data.message || 'Generation triggered' });
+      setTimeout(fetchNewsletters, 1000);
     } catch (error) {
       console.error('Failed to trigger generation:', error);
       setMessage({ type: 'error', text: 'Failed to trigger generation' });

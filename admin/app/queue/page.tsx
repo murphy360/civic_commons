@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import Sidebar from '../components/Sidebar';
+import { adminApi } from '@/lib/adminApi';
 
 interface QueueStatus {
   download: {
@@ -171,10 +172,23 @@ export default function QueuePage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/queue');
-      if (!response.ok) throw new Error('Failed to fetch queue status');
-      const data = await response.json();
-      setStatus(data);
+      const data = await adminApi.getQueue();
+      // Transform backend response to match interface
+      const transformed = {
+        download: data.download_queue,
+        extraction: data.extraction_queue,
+        ai_documents: data.ai_document_queue,
+        ai_videos: data.ai_video_queue,
+        ai_events: data.ai_event_queue,
+        ai_summaries: data.ai_summary_queue,
+        linking: data.linking_queue,
+        last_updated: data.timestamp || new Date().toISOString(),
+        total_pending: (data.download_queue?.pending || 0) + (data.extraction_queue?.pending || 0),
+        total_in_progress: (data.download_queue?.in_progress || 0) + (data.extraction_queue?.in_progress || 0),
+        is_healthy: data.health_status === 'healthy',
+        health_message: data.health_status || 'unknown'
+      };
+      setStatus(transformed);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -186,10 +200,11 @@ export default function QueuePage() {
       setItemsLoading(true);
       const currentPage = resetPage ? 0 : page;
       const offset = currentPage * ITEMS_PER_PAGE;
-      const statusParam = statusFilter !== 'all' ? `&status=${statusFilter}` : '';
-      const response = await fetch(`/api/queue/items?limit=${ITEMS_PER_PAGE}&offset=${offset}${statusParam}`);
-      if (!response.ok) throw new Error('Failed to fetch queue items');
-      const data = await response.json();
+      const data = await adminApi.getQueueItems({
+        limit: ITEMS_PER_PAGE,
+        offset: offset,
+        stage: statusFilter !== 'all' ? statusFilter : undefined
+      });
       setItems(data.items || []);
       setHasMore(data.pagination?.hasMore || false);
       setTotal(data.pagination?.total || 0);

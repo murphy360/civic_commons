@@ -1,12 +1,12 @@
-import { sql } from '@/lib/db';
-import SourceStatusTable from '../components/SourceStatusTable';
-import AutoRefresh from '../components/AutoRefresh';
-import Sidebar from '../components/Sidebar';
+'use client';
 
-export const dynamic = 'force-dynamic';
+import { useState, useEffect } from 'react';
+import SourceStatusTable from '../components/SourceStatusTable';
+import Sidebar from '../components/Sidebar';
+import { adminApi } from '@/lib/adminApi';
 
 // Auto-refresh interval in seconds
-const AUTO_REFRESH_INTERVAL_SECONDS = parseInt(process.env.ADMIN_AUTO_REFRESH_SECONDS || '30', 10);
+const AUTO_REFRESH_INTERVAL_SECONDS = parseInt(process.env.NEXT_PUBLIC_ADMIN_AUTO_REFRESH_SECONDS || '30', 10);
 
 interface SourceStatus {
   id: number;
@@ -14,61 +14,45 @@ interface SourceStatus {
   city_id: string;
   source_type: string;
   is_enabled: boolean;
-  last_fetched_at: Date | null;
-  last_success_at: Date | null;
+  last_fetched_at: string | null;
+  last_success_at: string | null;
   last_error: string | null;
   consecutive_failures: number;
-  trigger_requested_at: Date | null;
+  trigger_requested_at: string | null;
 }
 
-interface SourceStats {
-  total: number;
-  active: number;
-  healthy: number;
-  failing: number;
-}
+export default function SourcesPage() {
+  const [sources, setSources] = useState<SourceStatus[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
-async function getSources(): Promise<SourceStatus[]> {
-  try {
-    return await sql<SourceStatus[]>`
-      SELECT 
-        id, name, city_id, source_type, is_enabled,
-        last_fetched_at, last_success_at, last_error, consecutive_failures,
-        trigger_requested_at
-      FROM sources
-      ORDER BY 
-        consecutive_failures DESC,
-        last_fetched_at DESC NULLS LAST
-    `;
-  } catch (error) {
-    console.error('Failed to fetch sources:', error);
-    return [];
-  }
-}
+  useEffect(() => {
+    const fetchSources = async () => {
+      try {
+        const data = await adminApi.getSources();
+        setSources(data);
+      } catch (error) {
+        console.error('Failed to fetch sources:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-async function getSourceStats(): Promise<SourceStats> {
-  try {
-    const stats = await sql<Array<SourceStats>>`
-      SELECT 
-        COUNT(*)::int as total,
-        COUNT(*) FILTER (WHERE is_enabled = true)::int as active,
-        COUNT(*) FILTER (WHERE is_enabled = true AND consecutive_failures = 0)::int as healthy,
-        COUNT(*) FILTER (WHERE consecutive_failures > 0)::int as failing
-      FROM sources
-    `;
-    return stats[0] || { total: 0, active: 0, healthy: 0, failing: 0 };
-  } catch (error) {
-    console.error('Failed to fetch source stats:', error);
-    return { total: 0, active: 0, healthy: 0, failing: 0 };
-  }
-}
+    fetchSources();
 
-export default async function SourcesPage() {
-  const sources = await getSources();
-  const stats = await getSourceStats();
+    if (!autoRefresh) return;
+    const interval = setInterval(fetchSources, AUTO_REFRESH_INTERVAL_SECONDS * 1000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, AUTO_REFRESH_INTERVAL_SECONDS]);
+
+  const stats = {
+    total: sources.length,
+    active: sources.filter(s => s.is_enabled).length,
+    healthy: sources.filter(s => s.is_enabled && s.consecutive_failures === 0).length,
+    failing: sources.filter(s => s.consecutive_failures > 0).length,
+  };
 
   return (
-    <AutoRefresh intervalSeconds={AUTO_REFRESH_INTERVAL_SECONDS}>
     <div className="flex min-h-screen">
       <Sidebar />
 
@@ -78,9 +62,16 @@ export default async function SourcesPage() {
         <header className="flex h-14 items-center justify-between border-b px-6">
           <h1 className="text-lg font-semibold">Sources</h1>
           <div className="flex items-center gap-4">
-            <span className="text-sm text-muted-foreground">
-              Last updated: {new Date().toLocaleTimeString()}
-            </span>
+            <button
+              onClick={() => setAutoRefresh(!autoRefresh)}
+              className={`px-4 py-2 rounded-lg font-medium transition ${
+                autoRefresh 
+                  ? 'bg-blue-500 hover:bg-blue-600 text-white' 
+                  : 'bg-gray-700 hover:bg-gray-600 text-gray-100'
+              }`}
+            >
+              {autoRefresh ? '⏸ Auto-refresh: ON' : '▶ Auto-refresh: OFF'}
+            </button>
           </div>
         </header>
 
@@ -127,15 +118,16 @@ export default async function SourcesPage() {
           </div>
 
           {/* Source Status Table */}
-          <SourceStatusTable initialSources={sources.map(s => ({
-            ...s,
-            last_fetched_at: s.last_fetched_at?.toISOString() ?? null,
-            last_success_at: s.last_success_at?.toISOString() ?? null,
-            trigger_requested_at: s.trigger_requested_at?.toISOString() ?? null,
-          }))} />
+          {loading ? (
+            <div className="flex items-center justify-center p-8">
+              <p className="text-muted-foreground">Loading sources...</p>
+            </div>
+          ) : (
+            <SourceStatusTable initialSources={sources} />
+          )}
         </div>
       </main>
     </div>
-    </AutoRefresh>
   );
 }
+
